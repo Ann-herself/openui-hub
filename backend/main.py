@@ -1,6 +1,7 @@
 import os
+import subprocess
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
@@ -10,14 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
-# ---------------------------------------------------------
-# Basic configuration
-# ---------------------------------------------------------
+# =========================================================
+# Configuration
+# =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Read backend/.env even if the server is started
-# from another folder.
+# Load backend/.env regardless of the terminal's current folder.
 load_dotenv(BASE_DIR / ".env")
 
 SYNCTHING_URL = os.getenv(
@@ -27,13 +27,11 @@ SYNCTHING_URL = os.getenv(
 
 SYNCTHING_API_KEY = os.getenv("SYNCTHING_API_KEY")
 
-# For security, OpenUI can create folders only inside
-# the user's home folder by default.
+# By default, OpenUI may create folders only inside
+# the current Windows user's home directory.
 #
-# Example:
-# C:\Users\admin
+# This can later be changed inside backend/.env:
 #
-# You can change this later in backend/.env:
 # OPENUI_ALLOWED_ROOT=D:\OpenUI
 OPENUI_ALLOWED_ROOT = Path(
     os.getenv(
@@ -43,13 +41,13 @@ OPENUI_ALLOWED_ROOT = Path(
 ).expanduser().resolve()
 
 
-# ---------------------------------------------------------
+# =========================================================
 # FastAPI application
-# ---------------------------------------------------------
+# =========================================================
 
 app = FastAPI(
     title="OpenUI Hub API",
-    version="0.0.2",
+    version="0.0.3",
     description=(
         "A simple interface for managing Syncthing "
         "and other self-hosted open-source applications."
@@ -57,7 +55,6 @@ app = FastAPI(
 )
 
 
-# Allow the React frontend to communicate with FastAPI.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -70,11 +67,13 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Request models
-# ---------------------------------------------------------
+# =========================================================
 
 class CreateFolderRequest(BaseModel):
+    """Information required to create a Syncthing folder."""
+
     label: str = Field(
         min_length=1,
         max_length=128,
@@ -84,7 +83,7 @@ class CreateFolderRequest(BaseModel):
     path: str = Field(
         min_length=3,
         max_length=500,
-        description="The complete local Windows folder path.",
+        description="The complete local folder path.",
     )
 
     folder_type: Literal[
@@ -94,12 +93,12 @@ class CreateFolderRequest(BaseModel):
     ] = "sendreceive"
 
 
-# ---------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------
+# =========================================================
+# Shared helpers
+# =========================================================
 
 def get_syncthing_headers() -> dict[str, str]:
-    """Return the authentication headers for Syncthing."""
+    """Return authentication headers for the Syncthing API."""
 
     if not SYNCTHING_API_KEY:
         raise HTTPException(
@@ -117,7 +116,7 @@ def get_syncthing_headers() -> dict[str, str]:
 
 
 def normalize_path(value: str | Path) -> str:
-    """Normalize a filesystem path for reliable comparisons."""
+    """Normalize a path for reliable Windows comparisons."""
 
     return os.path.normcase(
         os.path.abspath(
@@ -129,7 +128,7 @@ def normalize_path(value: str | Path) -> str:
 def ensure_path_is_allowed(folder_path: Path) -> None:
     """
     Prevent OpenUI from creating folders outside the
-    configured safe directory.
+    configured allowed storage directory.
     """
 
     allowed_root = normalize_path(OPENUI_ALLOWED_ROOT)
@@ -161,36 +160,106 @@ def ensure_path_is_allowed(folder_path: Path) -> None:
         )
 
 
-# ---------------------------------------------------------
-# General routes
-# ---------------------------------------------------------
+async def get_syncthing_folder_config(
+    folder_id: str,
+) -> dict[str, Any]:
+    """Load one folder configuration from Syncthing."""
+
+    clean_folder_id = folder_id.strip()
+
+    if not clean_folder_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A folder ID is required.",
+        )
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+        ) as client:
+            response = await client.get(
+                (
+                    f"{SYNCTHING_URL}"
+                    f"/rest/config/folders/{clean_folder_id}"
+                ),
+                headers=headers,
+            )
+
+            if response.status_code == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="The selected folder was not found.",
+                )
+
+            response.raise_for_status()
+            folder_config = response.json()
+
+        if not isinstance(folder_config, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing returned an invalid "
+                    "folder configuration."
+                ),
+            )
+
+        return folder_config
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not load "
+                "the selected folder."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+# =========================================================
+# OpenUI routes
+# =========================================================
 
 @app.get("/")
-def home():
+def home() -> dict[str, str]:
     """Return basic OpenUI server information."""
 
     return {
         "message": "OpenUI Backend is working",
-        "version": "0.0.2",
+        "version": "0.0.3",
     }
 
 
 @app.get("/api/health")
-def openui_health():
-    """Return the health of the OpenUI backend itself."""
+def openui_health() -> dict[str, str | bool]:
+    """Return the health of the OpenUI backend."""
 
     return {
         "healthy": True,
         "service": "openui-backend",
+        "version": "0.0.3",
     }
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Syncthing status
-# ---------------------------------------------------------
+# =========================================================
 
 @app.get("/api/syncthing/status")
-async def get_syncthing_status():
+async def get_syncthing_status() -> dict[str, Any]:
     """Return Syncthing status and version information."""
 
     headers = get_syncthing_headers()
@@ -218,11 +287,20 @@ async def get_syncthing_status():
         return {
             "connected": True,
             "device_id": status_data.get("myID"),
-            "uptime_seconds": status_data.get("uptime"),
-            "memory_bytes": status_data.get("sys"),
-            "syncthing_version": version_data.get("version"),
-            "operating_system": version_data.get("os"),
-            "architecture": version_data.get("arch"),
+            "uptime_seconds": status_data.get("uptime", 0),
+            "memory_bytes": status_data.get("sys", 0),
+            "syncthing_version": version_data.get(
+                "version",
+                "Unknown",
+            ),
+            "operating_system": version_data.get(
+                "os",
+                "Unknown",
+            ),
+            "architecture": version_data.get(
+                "arch",
+                "Unknown",
+            ),
         }
 
     except httpx.HTTPStatusError as error:
@@ -244,13 +322,13 @@ async def get_syncthing_status():
         ) from error
 
 
-# ---------------------------------------------------------
+# =========================================================
 # List Syncthing folders
-# ---------------------------------------------------------
+# =========================================================
 
 @app.get("/api/syncthing/folders")
-async def get_syncthing_folders():
-    """Return all folders configured in Syncthing."""
+async def get_syncthing_folders() -> list[dict[str, Any]]:
+    """Return every folder currently configured in Syncthing."""
 
     headers = get_syncthing_headers()
 
@@ -265,6 +343,15 @@ async def get_syncthing_folders():
 
             response.raise_for_status()
             folders = response.json()
+
+        if not isinstance(folders, list):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing returned an invalid "
+                    "folders response."
+                ),
+            )
 
         return [
             {
@@ -284,7 +371,11 @@ async def get_syncthing_folders():
                 ),
             }
             for folder in folders
+            if isinstance(folder, dict)
         ]
+
+    except HTTPException:
+        raise
 
     except httpx.HTTPStatusError as error:
         raise HTTPException(
@@ -304,9 +395,9 @@ async def get_syncthing_folders():
         ) from error
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Create a new Syncthing folder
-# ---------------------------------------------------------
+# =========================================================
 
 @app.post(
     "/api/syncthing/folders",
@@ -314,10 +405,10 @@ async def get_syncthing_folders():
 )
 async def create_syncthing_folder(
     folder: CreateFolderRequest,
-):
+) -> dict[str, Any]:
     """
-    Create a physical folder on the computer and add it
-    to Syncthing without opening the Syncthing interface.
+    Create a physical folder on the computer and register
+    it in Syncthing.
     """
 
     label = folder.label.strip()
@@ -361,7 +452,7 @@ async def create_syncthing_folder(
         async with httpx.AsyncClient(
             timeout=15.0,
         ) as client:
-            # Check whether this path is already registered.
+            # Check whether the same path is already registered.
             folders_response = await client.get(
                 f"{SYNCTHING_URL}/rest/config/folders",
                 headers=headers,
@@ -372,22 +463,31 @@ async def create_syncthing_folder(
 
             requested_path = normalize_path(folder_path)
 
-            for existing_folder in existing_folders:
-                existing_path = existing_folder.get("path")
+            if isinstance(existing_folders, list):
+                for existing_folder in existing_folders:
+                    if not isinstance(existing_folder, dict):
+                        continue
 
-                if not existing_path:
-                    continue
+                    existing_path = existing_folder.get("path")
 
-                if normalize_path(existing_path) == requested_path:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            "This folder is already registered "
-                            "in Syncthing."
-                        ),
-                    )
+                    if not existing_path:
+                        continue
 
-            # Get Syncthing's default folder configuration.
+                    if (
+                        normalize_path(existing_path)
+                        == requested_path
+                    ):
+                        raise HTTPException(
+                            status_code=(
+                                status.HTTP_409_CONFLICT
+                            ),
+                            detail=(
+                                "This folder is already "
+                                "registered in Syncthing."
+                            ),
+                        )
+
+            # Load Syncthing's default folder configuration.
             defaults_response = await client.get(
                 (
                     f"{SYNCTHING_URL}"
@@ -398,6 +498,15 @@ async def create_syncthing_folder(
 
             defaults_response.raise_for_status()
             folder_config = defaults_response.json()
+
+            if not isinstance(folder_config, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=(
+                        "Syncthing returned invalid "
+                        "default folder settings."
+                    ),
+                )
 
             # Create the real folder on Windows.
             folder_path.mkdir(
@@ -419,7 +528,7 @@ async def create_syncthing_folder(
                 }
             )
 
-            # Add the new folder to Syncthing.
+            # Register the folder in Syncthing.
             create_response = await client.post(
                 f"{SYNCTHING_URL}/rest/config/folders",
                 headers=headers,
@@ -457,7 +566,7 @@ async def create_syncthing_folder(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "Windows could not create the folder. "
-                "Check the selected path and available space."
+                "Check the path and available disk space."
             ),
         ) from error
 
@@ -466,8 +575,153 @@ async def create_syncthing_folder(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
                 "Syncthing could not add the folder. "
-                "Check whether the path or folder ID "
-                "is already registered."
+                "Check whether its path is already registered."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+# =========================================================
+# Open a Syncthing folder in Windows Explorer
+# =========================================================
+
+@app.post(
+    "/api/syncthing/folders/{folder_id}/open",
+)
+async def open_syncthing_folder(
+    folder_id: str,
+) -> dict[str, Any]:
+    """Open a configured Syncthing folder in Explorer."""
+
+    folder_config = await get_syncthing_folder_config(
+        folder_id
+    )
+
+    configured_path = folder_config.get("path")
+
+    if not configured_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The selected folder does not have "
+                "a valid local path."
+            ),
+        )
+
+    folder_path = Path(
+        str(configured_path)
+    ).expanduser().resolve(
+        strict=False
+    )
+
+    if not folder_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The folder does not exist "
+                "on this computer."
+            ),
+        )
+
+    if not folder_path.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The configured path is not a folder."
+            ),
+        )
+
+    if os.name != "nt":
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                "Opening folders is currently "
+                "supported only on Windows."
+            ),
+        )
+
+    try:
+        subprocess.Popen(
+            [
+                "explorer.exe",
+                str(folder_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        return {
+            "opened": True,
+            "folder_id": folder_id,
+            "path": str(folder_path),
+            "message": (
+                "The folder was opened successfully."
+            ),
+        }
+
+    except OSError as error:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Windows could not open the folder."
+            ),
+        ) from error
+
+
+# =========================================================
+# Rescan a Syncthing folder
+# =========================================================
+
+@app.post(
+    "/api/syncthing/folders/{folder_id}/scan",
+)
+async def scan_syncthing_folder(
+    folder_id: str,
+) -> dict[str, Any]:
+    """Ask Syncthing to scan one folder immediately."""
+
+    # Verify that the folder exists before starting the scan.
+    await get_syncthing_folder_config(folder_id)
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=30.0,
+        ) as client:
+            response = await client.post(
+                f"{SYNCTHING_URL}/rest/db/scan",
+                headers=headers,
+                params={
+                    "folder": folder_id,
+                },
+            )
+
+            response.raise_for_status()
+
+        return {
+            "scanning": True,
+            "folder_id": folder_id,
+            "message": (
+                "Syncthing started scanning the folder."
+            ),
+        }
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not scan the folder."
             ),
         ) from error
 

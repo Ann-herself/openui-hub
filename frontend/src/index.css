@@ -205,3 +205,80 @@ select {
     width: 100%;
   }
 }
+.folder-card {
+  position: relative;
+}
+
+.folder-menu-wrap {
+  position: relative;
+}
+
+.folder-menu {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  z-index: 30;
+  width: 170px;
+  overflow: hidden;
+  border: 1px solid #dfe3e8;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 10px 32px
+    rgba(32, 33, 36, 0.18);
+}
+
+.folder-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 14px;
+  border: 0;
+  background: #ffffff;
+  color: #30343a;
+  text-align: left;
+  font-size: 13px;
+}
+
+.folder-menu button:hover {
+  background: #f1f4f8;
+}
+
+.folder-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.folder-menu button + button {
+  border-top: 1px solid #edf0f3;
+}
+
+.folder-menu button span {
+  width: 18px;
+  color: #1a73e8;
+  font-size: 16px;
+  text-align: center;
+}
+
+.app-notice {
+  position: fixed;
+  right: 25px;
+  bottom: 25px;
+  z-index: 150;
+  max-width: min(420px, calc(100% - 40px));
+  padding: 13px 17px;
+  border: 1px solid #bfe3cf;
+  border-radius: 12px;
+  background: #ecf8f1;
+  color: #17663e;
+  box-shadow: 0 12px 35px
+    rgba(32, 33, 36, 0.18);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.app-notice.error {
+  border-color: #efc3c3;
+  background: #fff3f3;
+  color: #a22020;
+}

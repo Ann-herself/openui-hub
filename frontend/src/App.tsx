@@ -30,6 +30,8 @@ type FolderType =
   | "sendonly"
   | "receiveonly";
 
+type FolderAction = "open" | "scan";
+
 const API_URL = "http://127.0.0.1:8000";
 
 function App() {
@@ -60,6 +62,14 @@ function App() {
 
   const [createError, setCreateError] =
     useState("");
+
+  const [activeMenuId, setActiveMenuId] =
+    useState<string | null>(null);
+
+  const [actionLoading, setActionLoading] =
+    useState<string | null>(null);
+
+  const [notice, setNotice] = useState("");
 
   async function loadData() {
     try {
@@ -109,6 +119,35 @@ function App() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    function closeMenus() {
+      setActiveMenuId(null);
+    }
+
+    window.addEventListener("click", closeMenus);
+
+    return () => {
+      window.removeEventListener(
+        "click",
+        closeMenus,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setNotice("");
+    }, 3500);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [notice]);
 
   const filteredFolders = useMemo(() => {
     const searchValue =
@@ -203,6 +242,9 @@ function App() {
       setFolderLabel("");
       setFolderPath("");
       setFolderType("sendreceive");
+      setNotice(
+        `${cleanLabel} was created successfully.`,
+      );
 
       await loadData();
     } catch (requestError) {
@@ -214,6 +256,58 @@ function App() {
       setCreateError(message);
     } finally {
       setCreateLoading(false);
+    }
+  }
+
+  async function runFolderAction(
+    folder: SyncthingFolder,
+    action: FolderAction,
+  ) {
+    const actionKey = `${folder.id}-${action}`;
+
+    try {
+      setActiveMenuId(null);
+      setActionLoading(actionKey);
+      setNotice("");
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          folder.id,
+        )}/${action}`,
+        {
+          method: "POST",
+        },
+      );
+
+      const data = await response
+        .json()
+        .catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            `Could not ${action} the folder.`,
+        );
+      }
+
+      if (action === "open") {
+        setNotice(
+          `${folder.label} was opened.`,
+        );
+      } else {
+        setNotice(
+          `Syncthing started scanning ${folder.label}.`,
+        );
+      }
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "The folder action failed.";
+
+      setNotice(`Error: ${message}`);
+    } finally {
+      setActionLoading(null);
     }
   }
 
@@ -411,13 +505,71 @@ function App() {
                             <span />
                           </div>
 
-                          <button
-                            className="more-button"
-                            type="button"
-                            title="Folder options"
+                          <div
+                            className="folder-menu-wrap"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                            }}
                           >
-                            •••
-                          </button>
+                            <button
+                              className="more-button"
+                              type="button"
+                              title="Folder options"
+                              aria-label={`Options for ${folder.label}`}
+                              onClick={() => {
+                                setActiveMenuId(
+                                  activeMenuId ===
+                                    folder.id
+                                    ? null
+                                    : folder.id,
+                                );
+                              }}
+                            >
+                              •••
+                            </button>
+
+                            {activeMenuId ===
+                              folder.id && (
+                              <div className="folder-menu">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    runFolderAction(
+                                      folder,
+                                      "open",
+                                    );
+                                  }}
+                                  disabled={
+                                    actionLoading !==
+                                    null
+                                  }
+                                >
+                                  <span>↗</span>
+                                  Open folder
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    runFolderAction(
+                                      folder,
+                                      "scan",
+                                    );
+                                  }}
+                                  disabled={
+                                    actionLoading !==
+                                    null
+                                  }
+                                >
+                                  <span>↻</span>
+                                  {actionLoading ===
+                                  `${folder.id}-scan`
+                                    ? "Scanning..."
+                                    : "Rescan"}
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
 
                         <h3>{folder.label}</h3>
@@ -494,6 +646,18 @@ function App() {
         </section>
       </main>
 
+      {notice && (
+        <div
+          className={
+            notice.startsWith("Error:")
+              ? "app-notice error"
+              : "app-notice"
+          }
+        >
+          {notice}
+        </div>
+      )}
+
       {isCreateOpen && (
         <div
           className="modal-backdrop"
@@ -515,6 +679,7 @@ function App() {
             <div className="modal-header">
               <div>
                 <p>NEW SYNC FOLDER</p>
+
                 <h2 id="create-folder-title">
                   Create a folder
                 </h2>
@@ -551,7 +716,9 @@ function App() {
               </label>
 
               <label className="form-field">
-                <span>Location on this computer</span>
+                <span>
+                  Location on this computer
+                </span>
 
                 <input
                   type="text"
@@ -565,7 +732,7 @@ function App() {
                 />
 
                 <small>
-                  For now, enter a location inside
+                  Enter a location inside
                   C:/Users/admin.
                 </small>
               </label>
