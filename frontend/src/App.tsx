@@ -115,6 +115,46 @@ function getFileLabel(entry: BrowserEntry) {
   return extension || "FILE";
 }
 
+function getPreviewType(entry: BrowserEntry) {
+  const extension = entry.extension.toLowerCase();
+
+  const imageExtensions = new Set([
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+  ]);
+
+  if (imageExtensions.has(extension)) {
+    return "image";
+  }
+
+  if (extension === ".pdf") {
+    return "pdf";
+  }
+
+  return "unsupported";
+}
+
+function buildFileUrl(
+  folderId: string,
+  filePath: string,
+  action: "content" | "download",
+) {
+  const query = new URLSearchParams({
+    path: filePath,
+  });
+
+  return (
+    `${API_URL}/api/syncthing/folders/` +
+    `${encodeURIComponent(folderId)}/files/` +
+    `${action}?${query.toString()}`
+  );
+}
+
 function App() {
   const [status, setStatus] =
     useState<SyncthingStatus | null>(null);
@@ -134,7 +174,6 @@ function App() {
 
   const [notice, setNotice] = useState("");
 
-  // File browser
   const [selectedFolder, setSelectedFolder] =
     useState<SyncthingFolder | null>(null);
 
@@ -147,7 +186,9 @@ function App() {
   const [browserError, setBrowserError] =
     useState("");
 
-  // Create folder modal
+  const [previewEntry, setPreviewEntry] =
+    useState<BrowserEntry | null>(null);
+
   const [isCreateOpen, setIsCreateOpen] =
     useState(false);
 
@@ -166,7 +207,6 @@ function App() {
   const [createError, setCreateError] =
     useState("");
 
-  // Rename modal
   const [renameTarget, setRenameTarget] =
     useState<SyncthingFolder | null>(null);
 
@@ -179,7 +219,6 @@ function App() {
   const [renameError, setRenameError] =
     useState("");
 
-  // Remove modal
   const [removeTarget, setRemoveTarget] =
     useState<SyncthingFolder | null>(null);
 
@@ -223,12 +262,11 @@ function App() {
       setStatus(statusData);
       setFolders(foldersData);
     } catch (requestError) {
-      const message =
+      setError(
         requestError instanceof Error
           ? requestError.message
-          : "An unknown error occurred.";
-
-      setError(message);
+          : "An unknown error occurred.",
+      );
     } finally {
       setLoading(false);
     }
@@ -272,12 +310,11 @@ function App() {
 
       setBrowserData(data);
     } catch (requestError) {
-      const message =
+      setBrowserError(
         requestError instanceof Error
           ? requestError.message
-          : "Could not load the folder contents.";
-
-      setBrowserError(message);
+          : "Could not load the folder contents.",
+      );
     } finally {
       setBrowserLoading(false);
     }
@@ -287,6 +324,7 @@ function App() {
     setSelectedFolder(null);
     setBrowserData(null);
     setBrowserError("");
+    setPreviewEntry(null);
     setSearch("");
   }
 
@@ -334,6 +372,26 @@ function App() {
       window.clearTimeout(timeout);
     };
   }, [notice]);
+
+  useEffect(() => {
+    function closeWithEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPreviewEntry(null);
+      }
+    }
+
+    window.addEventListener(
+      "keydown",
+      closeWithEscape,
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        closeWithEscape,
+      );
+    };
+  }, []);
 
   const filteredFolders = useMemo(() => {
     const searchValue =
@@ -462,12 +520,11 @@ function App() {
 
       await loadData();
     } catch (requestError) {
-      const message =
+      setCreateError(
         requestError instanceof Error
           ? requestError.message
-          : "The folder could not be created.";
-
-      setCreateError(message);
+          : "The folder could not be created.",
+      );
     } finally {
       setCreateLoading(false);
     }
@@ -477,11 +534,11 @@ function App() {
     folder: SyncthingFolder,
     action: FolderAction,
   ) {
-    const actionKey = `${folder.id}-${action}`;
-
     try {
       setActiveMenuId(null);
-      setActionLoading(actionKey);
+      setActionLoading(
+        `${folder.id}-${action}`,
+      );
 
       const response = await fetch(
         `${API_URL}/api/syncthing/folders/${encodeURIComponent(
@@ -512,12 +569,11 @@ function App() {
         );
       }
     } catch (requestError) {
-      const message =
+      showError(
         requestError instanceof Error
           ? requestError.message
-          : "The folder action failed.";
-
-      showError(message);
+          : "The folder action failed.",
+      );
     } finally {
       setActionLoading(null);
     }
@@ -567,12 +623,11 @@ function App() {
 
       await loadData();
     } catch (requestError) {
-      const message =
+      showError(
         requestError instanceof Error
           ? requestError.message
-          : "The folder state could not be changed.";
-
-      showError(message);
+          : "The folder state could not be changed.",
+      );
     } finally {
       setActionLoading(null);
     }
@@ -653,12 +708,11 @@ function App() {
 
       await loadData();
     } catch (requestError) {
-      const message =
+      setRenameError(
         requestError instanceof Error
           ? requestError.message
-          : "The folder could not be renamed.";
-
-      setRenameError(message);
+          : "The folder could not be renamed.",
+      );
     } finally {
       setRenameLoading(false);
     }
@@ -719,16 +773,37 @@ function App() {
 
       await loadData();
     } catch (requestError) {
-      const message =
+      setRemoveError(
         requestError instanceof Error
           ? requestError.message
-          : "The folder could not be removed.";
-
-      setRemoveError(message);
+          : "The folder could not be removed.",
+      );
     } finally {
       setRemoveLoading(false);
     }
   }
+
+  const previewType = previewEntry
+    ? getPreviewType(previewEntry)
+    : "unsupported";
+
+  const previewContentUrl =
+    previewEntry && selectedFolder
+      ? buildFileUrl(
+          selectedFolder.id,
+          previewEntry.path,
+          "content",
+        )
+      : "";
+
+  const previewDownloadUrl =
+    previewEntry && selectedFolder
+      ? buildFileUrl(
+          selectedFolder.id,
+          previewEntry.path,
+          "download",
+        )
+      : "";
 
   return (
     <div className="app-shell">
@@ -761,34 +836,22 @@ function App() {
             My Files
           </button>
 
-          <button
-            className="nav-item"
-            type="button"
-          >
+          <button className="nav-item" type="button">
             <span className="nav-icon">⇄</span>
             Sync Folders
           </button>
 
-          <button
-            className="nav-item"
-            type="button"
-          >
+          <button className="nav-item" type="button">
             <span className="nav-icon">◉</span>
             Devices
           </button>
 
-          <button
-            className="nav-item"
-            type="button"
-          >
+          <button className="nav-item" type="button">
             <span className="nav-icon">◷</span>
             Activity
           </button>
 
-          <button
-            className="nav-item"
-            type="button"
-          >
+          <button className="nav-item" type="button">
             <span className="nav-icon">⚙</span>
             Settings
           </button>
@@ -920,7 +983,6 @@ function App() {
                     <button
                       className="view-button active"
                       type="button"
-                      title="Grid view"
                     >
                       ▦
                     </button>
@@ -955,7 +1017,6 @@ function App() {
                               <button
                                 className="more-button"
                                 type="button"
-                                aria-label={`Options for ${folder.label}`}
                                 onClick={() => {
                                   setActiveMenuId(
                                     activeMenuId ===
@@ -1082,37 +1143,6 @@ function App() {
                       ),
                     )}
                   </div>
-
-                  <section className="quick-info">
-                    <article>
-                      <span>Syncthing</span>
-                      <strong>
-                        {status?.syncthing_version ||
-                          "—"}
-                      </strong>
-                    </article>
-
-                    <article>
-                      <span>System</span>
-                      <strong>
-                        {status
-                          ? `${status.operating_system} · ${status.architecture}`
-                          : "—"}
-                      </strong>
-                    </article>
-
-                    <article>
-                      <span>Device</span>
-                      <strong>
-                        {status?.device_id
-                          ? `${status.device_id.slice(
-                              0,
-                              7,
-                            )}…`
-                          : "—"}
-                      </strong>
-                    </article>
-                  </section>
                 </>
               )}
             </>
@@ -1144,6 +1174,7 @@ function App() {
                           <button
                             type="button"
                             onClick={() => {
+                              setSearch("");
                               loadBrowser(
                                 selectedFolder,
                                 breadcrumb.path,
@@ -1172,19 +1203,6 @@ function App() {
                   </strong>
 
                   <p>{browserError}</p>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      loadBrowser(
-                        selectedFolder,
-                        browserData?.current_path ||
-                          "",
-                      );
-                    }}
-                  >
-                    Try again
-                  </button>
                 </div>
               )}
 
@@ -1207,7 +1225,6 @@ function App() {
                       <button
                         className="view-button active"
                         type="button"
-                        title="Grid view"
                       >
                         ▦
                       </button>
@@ -1218,19 +1235,20 @@ function App() {
                         {filteredEntries.map(
                           (entry) => (
                             <article
-                              className={
-                                entry.is_folder
-                                  ? "browser-entry-card clickable"
-                                  : "browser-entry-card"
-                              }
+                              className="browser-entry-card clickable"
                               key={entry.path}
                               onClick={() => {
                                 if (
                                   entry.is_folder
                                 ) {
+                                  setSearch("");
                                   loadBrowser(
                                     selectedFolder,
                                     entry.path,
+                                  );
+                                } else {
+                                  setPreviewEntry(
+                                    entry,
                                   );
                                 }
                               }}
@@ -1277,8 +1295,8 @@ function App() {
                         </h2>
 
                         <p>
-                          Files and folders placed here
-                          will appear automatically.
+                          Files placed here will appear
+                          automatically.
                         </p>
                       </div>
                     )}
@@ -1298,6 +1316,114 @@ function App() {
           }
         >
           {notice}
+        </div>
+      )}
+
+      {previewEntry && selectedFolder && (
+        <div
+          className="file-preview-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              setPreviewEntry(null);
+            }
+          }}
+        >
+          <section
+            className="file-preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="preview-title"
+          >
+            <header className="file-preview-header">
+              <div>
+                <h2 id="preview-title">
+                  {previewEntry.name}
+                </h2>
+
+                <p>
+                  {formatFileSize(
+                    previewEntry.size_bytes,
+                  )}
+                  {" · "}
+                  {formatModifiedDate(
+                    previewEntry.modified_at,
+                  )}
+                </p>
+              </div>
+
+              <div className="file-preview-actions">
+                <a
+                  className="preview-download-button"
+                  href={previewDownloadUrl}
+                >
+                  Download
+                </a>
+
+                <button
+                  className="preview-close-button"
+                  type="button"
+                  onClick={() => {
+                    setPreviewEntry(null);
+                  }}
+                  aria-label="Close preview"
+                >
+                  ×
+                </button>
+              </div>
+            </header>
+
+            <div className="file-preview-body">
+              {previewType === "image" && (
+                <img
+                  src={previewContentUrl}
+                  alt={previewEntry.name}
+                />
+              )}
+
+              {previewType === "pdf" && (
+                <iframe
+                  src={previewContentUrl}
+                  title={previewEntry.name}
+                />
+              )}
+
+              {previewType ===
+                "unsupported" && (
+                <div className="unsupported-preview">
+                  <div className="unsupported-file-icon">
+                    {getFileLabel(
+                      previewEntry,
+                    )}
+                  </div>
+
+                  <h3>
+                    Preview is not available
+                  </h3>
+
+                  <p>
+                    Download the file to open it
+                    with an application on your
+                    computer.
+                  </p>
+
+                  <a
+                    className="preview-download-button large"
+                    href={previewDownloadUrl}
+                  >
+                    Download file
+                  </a>
+                </div>
+              )}
+            </div>
+
+            <footer className="file-preview-footer">
+              <span>Location</span>
+              <strong>{previewEntry.path}</strong>
+            </footer>
+          </section>
         </div>
       )}
 
@@ -1366,9 +1492,11 @@ function App() {
                   <option value="sendreceive">
                     Keep files synchronized everywhere
                   </option>
+
                   <option value="sendonly">
                     Send from this device only
                   </option>
+
                   <option value="receiveonly">
                     Receive on this device only
                   </option>
