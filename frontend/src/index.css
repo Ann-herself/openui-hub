@@ -767,3 +767,60 @@ select {
     white-space: normal;
   }
 }
+
+.new-menu-wrap {
+  position: relative;
+}
+
+.new-file-menu {
+  position: absolute;
+  top: 61px;
+  left: 0;
+  z-index: 80;
+  width: 205px;
+  overflow: hidden;
+  border: 1px solid #dfe3e8;
+  border-radius: 13px;
+  background: #ffffff;
+  box-shadow: 0 14px 40px
+    rgba(32, 33, 36, 0.2);
+}
+
+.new-file-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 15px;
+  border: 0;
+  background: #ffffff;
+  color: #30343a;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.new-file-menu button:hover {
+  background: #f1f4f8;
+}
+
+.new-file-menu button + button {
+  border-top: 1px solid #edf0f3;
+}
+
+.new-file-menu button span {
+  display: inline-grid;
+  width: 21px;
+  place-items: center;
+  color: #1a73e8;
+  font-size: 17px;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.new-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}

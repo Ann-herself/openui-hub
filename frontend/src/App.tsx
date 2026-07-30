@@ -2,6 +2,7 @@ import {
   type FormEvent,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import "./App.css";
@@ -61,7 +62,9 @@ type BrowserResponse = {
 
 const API_URL = "http://127.0.0.1:8000";
 
-async function readResponseData(response: Response) {
+async function readResponseData(
+  response: Response,
+): Promise<any> {
   return response.json().catch(() => ({}));
 }
 
@@ -115,7 +118,9 @@ function getFileLabel(entry: BrowserEntry) {
   return extension || "FILE";
 }
 
-function getPreviewType(entry: BrowserEntry) {
+function getPreviewType(
+  entry: BrowserEntry,
+): "image" | "pdf" | "unsupported" {
   const extension = entry.extension.toLowerCase();
 
   const imageExtensions = new Set([
@@ -174,6 +179,10 @@ function App() {
 
   const [notice, setNotice] = useState("");
 
+  /*
+   * File browser
+   */
+
   const [selectedFolder, setSelectedFolder] =
     useState<SyncthingFolder | null>(null);
 
@@ -186,8 +195,41 @@ function App() {
   const [browserError, setBrowserError] =
     useState("");
 
+  /*
+   * File preview
+   */
+
   const [previewEntry, setPreviewEntry] =
     useState<BrowserEntry | null>(null);
+
+  /*
+   * New menu and upload
+   */
+
+  const [isNewMenuOpen, setIsNewMenuOpen] =
+    useState(false);
+
+  const [isInnerFolderOpen, setIsInnerFolderOpen] =
+    useState(false);
+
+  const [innerFolderName, setInnerFolderName] =
+    useState("");
+
+  const [innerFolderLoading, setInnerFolderLoading] =
+    useState(false);
+
+  const [innerFolderError, setInnerFolderError] =
+    useState("");
+
+  const [uploadLoading, setUploadLoading] =
+    useState(false);
+
+  const uploadInputRef =
+    useRef<HTMLInputElement | null>(null);
+
+  /*
+   * Create Syncthing folder modal
+   */
 
   const [isCreateOpen, setIsCreateOpen] =
     useState(false);
@@ -207,6 +249,10 @@ function App() {
   const [createError, setCreateError] =
     useState("");
 
+  /*
+   * Rename Syncthing folder modal
+   */
+
   const [renameTarget, setRenameTarget] =
     useState<SyncthingFolder | null>(null);
 
@@ -219,6 +265,10 @@ function App() {
   const [renameError, setRenameError] =
     useState("");
 
+  /*
+   * Remove Syncthing folder modal
+   */
+
   const [removeTarget, setRemoveTarget] =
     useState<SyncthingFolder | null>(null);
 
@@ -228,6 +278,10 @@ function App() {
   const [removeError, setRemoveError] =
     useState("");
 
+  /*
+   * Load the main folders dashboard
+   */
+
   async function loadData() {
     try {
       setLoading(true);
@@ -235,8 +289,12 @@ function App() {
 
       const [statusResponse, foldersResponse] =
         await Promise.all([
-          fetch(`${API_URL}/api/syncthing/status`),
-          fetch(`${API_URL}/api/syncthing/folders`),
+          fetch(
+            `${API_URL}/api/syncthing/status`,
+          ),
+          fetch(
+            `${API_URL}/api/syncthing/folders`,
+          ),
         ]);
 
       const statusData =
@@ -272,6 +330,10 @@ function App() {
     }
   }
 
+  /*
+   * Load files inside one Syncthing folder
+   */
+
   async function loadBrowser(
     folder: SyncthingFolder,
     path = "",
@@ -281,6 +343,8 @@ function App() {
       setBrowserLoading(true);
       setBrowserError("");
       setActiveMenuId(null);
+      setIsNewMenuOpen(false);
+      setPreviewEntry(null);
 
       const query = new URLSearchParams();
 
@@ -325,6 +389,7 @@ function App() {
     setBrowserData(null);
     setBrowserError("");
     setPreviewEntry(null);
+    setIsNewMenuOpen(false);
     setSearch("");
   }
 
@@ -334,6 +399,7 @@ function App() {
         selectedFolder,
         browserData?.current_path || "",
       );
+
       return;
     }
 
@@ -347,9 +413,13 @@ function App() {
   useEffect(() => {
     function closeMenus() {
       setActiveMenuId(null);
+      setIsNewMenuOpen(false);
     }
 
-    window.addEventListener("click", closeMenus);
+    window.addEventListener(
+      "click",
+      closeMenus,
+    );
 
     return () => {
       window.removeEventListener(
@@ -374,9 +444,12 @@ function App() {
   }, [notice]);
 
   useEffect(() => {
-    function closeWithEscape(event: KeyboardEvent) {
+    function closeWithEscape(
+      event: KeyboardEvent,
+    ) {
       if (event.key === "Escape") {
         setPreviewEntry(null);
+        setIsNewMenuOpen(false);
       }
     }
 
@@ -441,6 +514,10 @@ function App() {
     setNotice(`Error: ${message}`);
   }
 
+  /*
+   * Create a new main Syncthing folder
+   */
+
   function openCreateDialog() {
     setFolderLabel("");
     setFolderPath("");
@@ -470,6 +547,7 @@ function App() {
       setCreateError(
         "Please enter a folder name.",
       );
+
       return;
     }
 
@@ -477,6 +555,7 @@ function App() {
       setCreateError(
         "Please enter the folder location.",
       );
+
       return;
     }
 
@@ -530,6 +609,10 @@ function App() {
     }
   }
 
+  /*
+   * Open or scan a Syncthing folder
+   */
+
   async function runFolderAction(
     folder: SyncthingFolder,
     action: FolderAction,
@@ -578,6 +661,10 @@ function App() {
       setActionLoading(null);
     }
   }
+
+  /*
+   * Pause or resume a Syncthing folder
+   */
 
   async function toggleFolderPaused(
     folder: SyncthingFolder,
@@ -633,6 +720,10 @@ function App() {
     }
   }
 
+  /*
+   * Rename a main Syncthing folder
+   */
+
   function openRenameDialog(
     folder: SyncthingFolder,
   ) {
@@ -667,6 +758,7 @@ function App() {
       setRenameError(
         "Please enter a folder name.",
       );
+
       return;
     }
 
@@ -718,6 +810,10 @@ function App() {
     }
   }
 
+  /*
+   * Remove a main Syncthing folder
+   */
+
   function openRemoveDialog(
     folder: SyncthingFolder,
   ) {
@@ -763,7 +859,8 @@ function App() {
         );
       }
 
-      const removedLabel = removeTarget.label;
+      const removedLabel =
+        removeTarget.label;
 
       setRemoveTarget(null);
 
@@ -780,6 +877,191 @@ function App() {
       );
     } finally {
       setRemoveLoading(false);
+    }
+  }
+
+  /*
+   * New menu inside the file browser
+   */
+
+  function handleNewButton() {
+    if (!selectedFolder) {
+      openCreateDialog();
+
+      return;
+    }
+
+    setIsNewMenuOpen(
+      (current) => !current,
+    );
+  }
+
+  /*
+   * Create an inner folder
+   */
+
+  function openInnerFolderDialog() {
+    setIsNewMenuOpen(false);
+    setInnerFolderName("");
+    setInnerFolderError("");
+    setIsInnerFolderOpen(true);
+  }
+
+  function closeInnerFolderDialog() {
+    if (innerFolderLoading) {
+      return;
+    }
+
+    setIsInnerFolderOpen(false);
+    setInnerFolderName("");
+    setInnerFolderError("");
+  }
+
+  async function createInnerFolder(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    if (!selectedFolder) {
+      return;
+    }
+
+    const cleanName =
+      innerFolderName.trim();
+
+    if (!cleanName) {
+      setInnerFolderError(
+        "Please enter a folder name.",
+      );
+
+      return;
+    }
+
+    try {
+      setInnerFolderLoading(true);
+      setInnerFolderError("");
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          selectedFolder.id,
+        )}/files/folders`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            parent_path:
+              browserData?.current_path || "",
+            name: cleanName,
+          }),
+        },
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "The folder could not be created.",
+        );
+      }
+
+      setIsInnerFolderOpen(false);
+      setInnerFolderName("");
+
+      showSuccess(
+        `${cleanName} was created successfully.`,
+      );
+
+      await loadBrowser(
+        selectedFolder,
+        browserData?.current_path || "",
+      );
+    } catch (requestError) {
+      setInnerFolderError(
+        requestError instanceof Error
+          ? requestError.message
+          : "The folder could not be created.",
+      );
+    } finally {
+      setInnerFolderLoading(false);
+    }
+  }
+
+  /*
+   * Upload one file
+   */
+
+  async function uploadSelectedFile(
+    file: File,
+  ) {
+    if (!selectedFolder) {
+      return;
+    }
+
+    try {
+      setUploadLoading(true);
+      setIsNewMenuOpen(false);
+
+      const formData = new FormData();
+
+      formData.append(
+        "path",
+        browserData?.current_path || "",
+      );
+
+      formData.append(
+        "overwrite",
+        "false",
+      );
+
+      formData.append(
+        "file",
+        file,
+      );
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          selectedFolder.id,
+        )}/files/upload`,
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "The file could not be uploaded.",
+        );
+      }
+
+      showSuccess(
+        `${file.name} was uploaded successfully.`,
+      );
+
+      await loadBrowser(
+        selectedFolder,
+        browserData?.current_path || "",
+      );
+    } catch (requestError) {
+      showError(
+        requestError instanceof Error
+          ? requestError.message
+          : "The file could not be uploaded.",
+      );
+    } finally {
+      setUploadLoading(false);
+
+      if (uploadInputRef.current) {
+        uploadInputRef.current.value = "";
+      }
     }
   }
 
@@ -809,7 +1091,9 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">O</div>
+          <div className="brand-mark">
+            O
+          </div>
 
           <div>
             <strong>OpenUI</strong>
@@ -817,14 +1101,66 @@ function App() {
           </div>
         </div>
 
-        <button
-          className="new-button"
-          type="button"
-          onClick={openCreateDialog}
+        <div
+          className="new-menu-wrap"
+          onClick={(event) => {
+            event.stopPropagation();
+          }}
         >
-          <span>＋</span>
-          New
-        </button>
+          <button
+            className="new-button"
+            type="button"
+            onClick={handleNewButton}
+            disabled={uploadLoading}
+          >
+            <span>＋</span>
+
+            {uploadLoading
+              ? "Uploading..."
+              : "New"}
+          </button>
+
+          {selectedFolder &&
+            isNewMenuOpen && (
+              <div className="new-file-menu">
+                <button
+                  type="button"
+                  onClick={
+                    openInnerFolderDialog
+                  }
+                >
+                  <span>▣</span>
+                  New folder
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsNewMenuOpen(false);
+
+                    uploadInputRef.current?.click();
+                  }}
+                >
+                  <span>↑</span>
+                  Upload file
+                </button>
+              </div>
+            )}
+
+          <input
+            ref={uploadInputRef}
+            className="hidden-file-input"
+            type="file"
+            onChange={(event) => {
+              const file =
+                event.target.files?.[0];
+
+              if (file) {
+                uploadSelectedFile(file);
+              }
+            }}
+          />
+        </div>
 
         <nav className="navigation">
           <button
@@ -832,27 +1168,49 @@ function App() {
             type="button"
             onClick={returnToMyFiles}
           >
-            <span className="nav-icon">▣</span>
+            <span className="nav-icon">
+              ▣
+            </span>
             My Files
           </button>
 
-          <button className="nav-item" type="button">
-            <span className="nav-icon">⇄</span>
+          <button
+            className="nav-item"
+            type="button"
+          >
+            <span className="nav-icon">
+              ⇄
+            </span>
             Sync Folders
           </button>
 
-          <button className="nav-item" type="button">
-            <span className="nav-icon">◉</span>
+          <button
+            className="nav-item"
+            type="button"
+          >
+            <span className="nav-icon">
+              ◉
+            </span>
             Devices
           </button>
 
-          <button className="nav-item" type="button">
-            <span className="nav-icon">◷</span>
+          <button
+            className="nav-item"
+            type="button"
+          >
+            <span className="nav-icon">
+              ◷
+            </span>
             Activity
           </button>
 
-          <button className="nav-item" type="button">
-            <span className="nav-icon">⚙</span>
+          <button
+            className="nav-item"
+            type="button"
+          >
+            <span className="nav-icon">
+              ⚙
+            </span>
             Settings
           </button>
         </nav>
@@ -875,7 +1233,8 @@ function App() {
 
             <span>
               Syncthing{" "}
-              {status?.syncthing_version || ""}
+              {status?.syncthing_version ||
+                ""}
             </span>
           </div>
         </div>
@@ -895,7 +1254,9 @@ function App() {
               }
               value={search}
               onChange={(event) => {
-                setSearch(event.target.value);
+                setSearch(
+                  event.target.value,
+                );
               }}
             />
           </label>
@@ -910,7 +1271,9 @@ function App() {
             ↻
           </button>
 
-          <div className="user-avatar">AM</div>
+          <div className="user-avatar">
+            AM
+          </div>
         </header>
 
         <section className="content">
@@ -973,8 +1336,12 @@ function App() {
                       <h2>Folders</h2>
 
                       <span>
-                        {filteredFolders.length} folder
-                        {filteredFolders.length === 1
+                        {
+                          filteredFolders.length
+                        }{" "}
+                        folder
+                        {filteredFolders.length ===
+                        1
                           ? ""
                           : "s"}
                       </span>
@@ -983,166 +1350,239 @@ function App() {
                     <button
                       className="view-button active"
                       type="button"
+                      title="Grid view"
                     >
                       ▦
                     </button>
                   </div>
 
-                  <div className="folder-grid">
-                    {filteredFolders.map(
-                      (folder) => (
-                        <article
-                          className={
-                            folder.paused
-                              ? "folder-card paused-folder"
-                              : "folder-card"
-                          }
-                          key={folder.id}
-                          onClick={() => {
-                            setSearch("");
-                            loadBrowser(folder);
-                          }}
-                        >
-                          <div className="folder-card-top">
-                            <div className="folder-icon">
-                              <span />
-                            </div>
+                  {filteredFolders.length >
+                  0 ? (
+                    <div className="folder-grid">
+                      {filteredFolders.map(
+                        (folder) => (
+                          <article
+                            className={
+                              folder.paused
+                                ? "folder-card paused-folder"
+                                : "folder-card"
+                            }
+                            key={folder.id}
+                            onClick={() => {
+                              setSearch("");
 
-                            <div
-                              className="folder-menu-wrap"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                              }}
-                            >
-                              <button
-                                className="more-button"
-                                type="button"
-                                onClick={() => {
-                                  setActiveMenuId(
-                                    activeMenuId ===
-                                      folder.id
-                                      ? null
-                                      : folder.id,
-                                  );
+                              loadBrowser(folder);
+                            }}
+                          >
+                            <div className="folder-card-top">
+                              <div className="folder-icon">
+                                <span />
+                              </div>
+
+                              <div
+                                className="folder-menu-wrap"
+                                onClick={(
+                                  event,
+                                ) => {
+                                  event.stopPropagation();
                                 }}
                               >
-                                •••
-                              </button>
+                                <button
+                                  className="more-button"
+                                  type="button"
+                                  aria-label={`Options for ${folder.label}`}
+                                  onClick={() => {
+                                    setActiveMenuId(
+                                      activeMenuId ===
+                                        folder.id
+                                        ? null
+                                        : folder.id,
+                                    );
+                                  }}
+                                >
+                                  •••
+                                </button>
 
-                              {activeMenuId ===
-                                folder.id && (
-                                <div className="folder-menu">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      runFolderAction(
-                                        folder,
-                                        "open",
-                                      );
-                                    }}
-                                  >
-                                    <span>↗</span>
-                                    Open folder
-                                  </button>
+                                {activeMenuId ===
+                                  folder.id && (
+                                  <div className="folder-menu">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        runFolderAction(
+                                          folder,
+                                          "open",
+                                        );
+                                      }}
+                                    >
+                                      <span>
+                                        ↗
+                                      </span>
+                                      Open folder
+                                    </button>
 
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      runFolderAction(
-                                        folder,
-                                        "scan",
-                                      );
-                                    }}
-                                    disabled={
-                                      folder.paused
-                                    }
-                                  >
-                                    <span>↻</span>
-                                    Rescan
-                                  </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        runFolderAction(
+                                          folder,
+                                          "scan",
+                                        );
+                                      }}
+                                      disabled={
+                                        folder.paused
+                                      }
+                                    >
+                                      <span>
+                                        ↻
+                                      </span>
+                                      Rescan
+                                    </button>
 
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      toggleFolderPaused(
-                                        folder,
-                                      );
-                                    }}
-                                    disabled={
-                                      actionLoading !==
-                                      null
-                                    }
-                                  >
-                                    <span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        toggleFolderPaused(
+                                          folder,
+                                        );
+                                      }}
+                                      disabled={
+                                        actionLoading !==
+                                        null
+                                      }
+                                    >
+                                      <span>
+                                        {folder.paused
+                                          ? "▶"
+                                          : "Ⅱ"}
+                                      </span>
+
                                       {folder.paused
-                                        ? "▶"
-                                        : "Ⅱ"}
-                                    </span>
+                                        ? "Resume sync"
+                                        : "Pause sync"}
+                                    </button>
 
-                                    {folder.paused
-                                      ? "Resume sync"
-                                      : "Pause sync"}
-                                  </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        openRenameDialog(
+                                          folder,
+                                        );
+                                      }}
+                                    >
+                                      <span>
+                                        ✎
+                                      </span>
+                                      Rename
+                                    </button>
 
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      openRenameDialog(
-                                        folder,
-                                      );
-                                    }}
-                                  >
-                                    <span>✎</span>
-                                    Rename
-                                  </button>
-
-                                  <button
-                                    className="menu-danger"
-                                    type="button"
-                                    onClick={() => {
-                                      openRemoveDialog(
-                                        folder,
-                                      );
-                                    }}
-                                  >
-                                    <span>×</span>
-                                    Remove from Syncthing
-                                  </button>
-                                </div>
-                              )}
+                                    <button
+                                      className="menu-danger"
+                                      type="button"
+                                      onClick={() => {
+                                        openRemoveDialog(
+                                          folder,
+                                        );
+                                      }}
+                                    >
+                                      <span>
+                                        ×
+                                      </span>
+                                      Remove from
+                                      Syncthing
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                          </div>
 
-                          <h3>{folder.label}</h3>
+                            <h3>
+                              {folder.label}
+                            </h3>
 
-                          <p className="folder-path">
-                            {folder.path}
-                          </p>
+                            <p className="folder-path">
+                              {folder.path}
+                            </p>
 
-                          <div className="folder-meta">
-                            <span
-                              className={
-                                folder.paused
-                                  ? "folder-status paused"
-                                  : "folder-status"
-                              }
-                            >
-                              {folder.paused
-                                ? "Sync paused"
-                                : "Sync active"}
-                            </span>
+                            <div className="folder-meta">
+                              <span
+                                className={
+                                  folder.paused
+                                    ? "folder-status paused"
+                                    : "folder-status"
+                                }
+                              >
+                                {folder.paused
+                                  ? "Sync paused"
+                                  : "Sync active"}
+                              </span>
 
-                            <span>
-                              {folder.device_count} device
-                              {folder.device_count === 1
-                                ? ""
-                                : "s"}
-                            </span>
-                          </div>
-                        </article>
-                      ),
-                    )}
-                  </div>
+                              <span>
+                                {
+                                  folder.device_count
+                                }{" "}
+                                device
+                                {folder.device_count ===
+                                1
+                                  ? ""
+                                  : "s"}
+                              </span>
+                            </div>
+                          </article>
+                        ),
+                      )}
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <div className="empty-folder">
+                        <span />
+                      </div>
+
+                      <h2>
+                        No folders found
+                      </h2>
+
+                      <p>
+                        Try another search or
+                        create a new sync
+                        folder.
+                      </p>
+                    </div>
+                  )}
+
+                  <section className="quick-info">
+                    <article>
+                      <span>Syncthing</span>
+
+                      <strong>
+                        {status?.syncthing_version ||
+                          "—"}
+                      </strong>
+                    </article>
+
+                    <article>
+                      <span>System</span>
+
+                      <strong>
+                        {status
+                          ? `${status.operating_system} · ${status.architecture}`
+                          : "—"}
+                      </strong>
+                    </article>
+
+                    <article>
+                      <span>Device</span>
+
+                      <strong>
+                        {status?.device_id
+                          ? `${status.device_id.slice(
+                              0,
+                              7,
+                            )}…`
+                          : "—"}
+                      </strong>
+                    </article>
+                  </section>
                 </>
               )}
             </>
@@ -1162,7 +1602,10 @@ function App() {
                 {browserData && (
                   <nav className="breadcrumbs">
                     {browserData.breadcrumbs.map(
-                      (breadcrumb, index) => (
+                      (
+                        breadcrumb,
+                        index,
+                      ) => (
                         <div
                           className="breadcrumb-part"
                           key={`${breadcrumb.path}-${index}`}
@@ -1175,13 +1618,16 @@ function App() {
                             type="button"
                             onClick={() => {
                               setSearch("");
+
                               loadBrowser(
                                 selectedFolder,
                                 breadcrumb.path,
                               );
                             }}
                           >
-                            {breadcrumb.label}
+                            {
+                              breadcrumb.label
+                            }
                           </button>
                         </div>
                       ),
@@ -1192,7 +1638,8 @@ function App() {
 
               {browserLoading && (
                 <div className="state-card">
-                  Loading folder contents...
+                  Loading folder
+                  contents...
                 </div>
               )}
 
@@ -1203,6 +1650,19 @@ function App() {
                   </strong>
 
                   <p>{browserError}</p>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      loadBrowser(
+                        selectedFolder,
+                        browserData?.current_path ||
+                          "",
+                      );
+                    }}
+                  >
+                    Try again
+                  </button>
                 </div>
               )}
 
@@ -1215,8 +1675,12 @@ function App() {
                         <h2>Files</h2>
 
                         <span>
-                          {filteredEntries.length} item
-                          {filteredEntries.length === 1
+                          {
+                            filteredEntries.length
+                          }{" "}
+                          item
+                          {filteredEntries.length ===
+                          1
                             ? ""
                             : "s"}
                         </span>
@@ -1225,12 +1689,14 @@ function App() {
                       <button
                         className="view-button active"
                         type="button"
+                        title="Grid view"
                       >
                         ▦
                       </button>
                     </div>
 
-                    {filteredEntries.length > 0 ? (
+                    {filteredEntries.length >
+                    0 ? (
                       <div className="browser-grid">
                         {filteredEntries.map(
                           (entry) => (
@@ -1242,6 +1708,7 @@ function App() {
                                   entry.is_folder
                                 ) {
                                   setSearch("");
+
                                   loadBrowser(
                                     selectedFolder,
                                     entry.path,
@@ -1262,10 +1729,14 @@ function App() {
                               >
                                 {entry.is_folder
                                   ? ""
-                                  : getFileLabel(entry)}
+                                  : getFileLabel(
+                                      entry,
+                                    )}
                               </div>
 
-                              <h3>{entry.name}</h3>
+                              <h3>
+                                {entry.name}
+                              </h3>
 
                               <p>
                                 {entry.is_folder
@@ -1295,8 +1766,9 @@ function App() {
                         </h2>
 
                         <p>
-                          Files placed here will appear
-                          automatically.
+                          Create a folder or
+                          upload a file using
+                          the New button.
                         </p>
                       </div>
                     )}
@@ -1319,127 +1791,285 @@ function App() {
         </div>
       )}
 
-      {previewEntry && selectedFolder && (
+      {previewEntry &&
+        selectedFolder && (
+          <div
+            className="file-preview-backdrop"
+            onMouseDown={(event) => {
+              if (
+                event.target ===
+                event.currentTarget
+              ) {
+                setPreviewEntry(null);
+              }
+            }}
+          >
+            <section
+              className="file-preview-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="preview-title"
+            >
+              <header className="file-preview-header">
+                <div>
+                  <h2 id="preview-title">
+                    {previewEntry.name}
+                  </h2>
+
+                  <p>
+                    {formatFileSize(
+                      previewEntry.size_bytes,
+                    )}
+                    {" · "}
+                    {formatModifiedDate(
+                      previewEntry.modified_at,
+                    )}
+                  </p>
+                </div>
+
+                <div className="file-preview-actions">
+                  <a
+                    className="preview-download-button"
+                    href={
+                      previewDownloadUrl
+                    }
+                  >
+                    Download
+                  </a>
+
+                  <button
+                    className="preview-close-button"
+                    type="button"
+                    onClick={() => {
+                      setPreviewEntry(
+                        null,
+                      );
+                    }}
+                    aria-label="Close preview"
+                  >
+                    ×
+                  </button>
+                </div>
+              </header>
+
+              <div className="file-preview-body">
+                {previewType ===
+                  "image" && (
+                  <img
+                    src={
+                      previewContentUrl
+                    }
+                    alt={
+                      previewEntry.name
+                    }
+                  />
+                )}
+
+                {previewType ===
+                  "pdf" && (
+                  <iframe
+                    src={
+                      previewContentUrl
+                    }
+                    title={
+                      previewEntry.name
+                    }
+                  />
+                )}
+
+                {previewType ===
+                  "unsupported" && (
+                  <div className="unsupported-preview">
+                    <div className="unsupported-file-icon">
+                      {getFileLabel(
+                        previewEntry,
+                      )}
+                    </div>
+
+                    <h3>
+                      Preview is not
+                      available
+                    </h3>
+
+                    <p>
+                      Download the file
+                      to open it with an
+                      application on your
+                      computer.
+                    </p>
+
+                    <a
+                      className="preview-download-button large"
+                      href={
+                        previewDownloadUrl
+                      }
+                    >
+                      Download file
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              <footer className="file-preview-footer">
+                <span>Location</span>
+
+                <strong>
+                  {previewEntry.path}
+                </strong>
+              </footer>
+            </section>
+          </div>
+        )}
+
+      {isInnerFolderOpen &&
+        selectedFolder && (
+          <div
+            className="modal-backdrop"
+            onMouseDown={(event) => {
+              if (
+                event.target ===
+                event.currentTarget
+              ) {
+                closeInnerFolderDialog();
+              }
+            }}
+          >
+            <section
+              className="create-modal"
+              role="dialog"
+              aria-modal="true"
+            >
+              <div className="modal-header">
+                <div>
+                  <p>NEW FOLDER</p>
+                  <h2>
+                    Create a folder
+                  </h2>
+                </div>
+
+                <button
+                  className="modal-close"
+                  type="button"
+                  onClick={
+                    closeInnerFolderDialog
+                  }
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+
+              <form
+                className="create-form"
+                onSubmit={
+                  createInnerFolder
+                }
+              >
+                <label className="form-field">
+                  <span>
+                    Folder name
+                  </span>
+
+                  <input
+                    type="text"
+                    placeholder="Example: Documents"
+                    value={
+                      innerFolderName
+                    }
+                    onChange={(
+                      event,
+                    ) => {
+                      setInnerFolderName(
+                        event.target
+                          .value,
+                      );
+                    }}
+                    autoFocus
+                  />
+
+                  <small>
+                    The folder will be
+                    created inside{" "}
+                    {browserData?.current_path ||
+                      selectedFolder.label}
+                    .
+                  </small>
+                </label>
+
+                {innerFolderError && (
+                  <div className="form-error">
+                    {
+                      innerFolderError
+                    }
+                  </div>
+                )}
+
+                <div className="modal-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={
+                      closeInnerFolderDialog
+                    }
+                    disabled={
+                      innerFolderLoading
+                    }
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={
+                      innerFolderLoading
+                    }
+                  >
+                    {innerFolderLoading
+                      ? "Creating..."
+                      : "Create folder"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
+
+      {isCreateOpen && (
         <div
-          className="file-preview-backdrop"
+          className="modal-backdrop"
           onMouseDown={(event) => {
             if (
               event.target ===
               event.currentTarget
             ) {
-              setPreviewEntry(null);
+              closeCreateDialog();
             }
           }}
         >
           <section
-            className="file-preview-modal"
+            className="create-modal"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="preview-title"
           >
-            <header className="file-preview-header">
-              <div>
-                <h2 id="preview-title">
-                  {previewEntry.name}
-                </h2>
-
-                <p>
-                  {formatFileSize(
-                    previewEntry.size_bytes,
-                  )}
-                  {" · "}
-                  {formatModifiedDate(
-                    previewEntry.modified_at,
-                  )}
-                </p>
-              </div>
-
-              <div className="file-preview-actions">
-                <a
-                  className="preview-download-button"
-                  href={previewDownloadUrl}
-                >
-                  Download
-                </a>
-
-                <button
-                  className="preview-close-button"
-                  type="button"
-                  onClick={() => {
-                    setPreviewEntry(null);
-                  }}
-                  aria-label="Close preview"
-                >
-                  ×
-                </button>
-              </div>
-            </header>
-
-            <div className="file-preview-body">
-              {previewType === "image" && (
-                <img
-                  src={previewContentUrl}
-                  alt={previewEntry.name}
-                />
-              )}
-
-              {previewType === "pdf" && (
-                <iframe
-                  src={previewContentUrl}
-                  title={previewEntry.name}
-                />
-              )}
-
-              {previewType ===
-                "unsupported" && (
-                <div className="unsupported-preview">
-                  <div className="unsupported-file-icon">
-                    {getFileLabel(
-                      previewEntry,
-                    )}
-                  </div>
-
-                  <h3>
-                    Preview is not available
-                  </h3>
-
-                  <p>
-                    Download the file to open it
-                    with an application on your
-                    computer.
-                  </p>
-
-                  <a
-                    className="preview-download-button large"
-                    href={previewDownloadUrl}
-                  >
-                    Download file
-                  </a>
-                </div>
-              )}
-            </div>
-
-            <footer className="file-preview-footer">
-              <span>Location</span>
-              <strong>{previewEntry.path}</strong>
-            </footer>
-          </section>
-        </div>
-      )}
-
-      {isCreateOpen && (
-        <div className="modal-backdrop">
-          <section className="create-modal">
             <div className="modal-header">
               <div>
-                <p>NEW SYNC FOLDER</p>
-                <h2>Create a folder</h2>
+                <p>
+                  NEW SYNC FOLDER
+                </p>
+
+                <h2>
+                  Create a sync folder
+                </h2>
               </div>
 
               <button
                 className="modal-close"
                 type="button"
-                onClick={closeCreateDialog}
+                onClick={
+                  closeCreateDialog
+                }
+                aria-label="Close"
               >
                 ×
               </button>
@@ -1453,6 +2083,8 @@ function App() {
                 <span>Folder name</span>
 
                 <input
+                  type="text"
+                  placeholder="Example: Projects"
                   value={folderLabel}
                   onChange={(event) => {
                     setFolderLabel(
@@ -1464,16 +2096,20 @@ function App() {
               </label>
 
               <label className="form-field">
-                <span>Location</span>
+                <span>
+                  Location on this
+                  computer
+                </span>
 
                 <input
+                  type="text"
+                  placeholder="C:/Users/admin/Projects"
                   value={folderPath}
                   onChange={(event) => {
                     setFolderPath(
                       event.target.value,
                     );
                   }}
-                  placeholder="C:/Users/admin/Projects"
                 />
               </label>
 
@@ -1490,15 +2126,19 @@ function App() {
                   }}
                 >
                   <option value="sendreceive">
-                    Keep files synchronized everywhere
+                    Keep files
+                    synchronized
+                    everywhere
                   </option>
 
                   <option value="sendonly">
-                    Send from this device only
+                    Send from this
+                    device only
                   </option>
 
                   <option value="receiveonly">
-                    Receive on this device only
+                    Receive on this
+                    device only
                   </option>
                 </select>
               </label>
@@ -1513,7 +2153,12 @@ function App() {
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={closeCreateDialog}
+                  onClick={
+                    closeCreateDialog
+                  }
+                  disabled={
+                    createLoading
+                  }
                 >
                   Cancel
                 </button>
@@ -1521,7 +2166,9 @@ function App() {
                 <button
                   className="primary-button"
                   type="submit"
-                  disabled={createLoading}
+                  disabled={
+                    createLoading
+                  }
                 >
                   {createLoading
                     ? "Creating..."
@@ -1534,18 +2181,38 @@ function App() {
       )}
 
       {renameTarget && (
-        <div className="modal-backdrop">
-          <section className="create-modal">
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              closeRenameDialog();
+            }
+          }}
+        >
+          <section
+            className="create-modal"
+            role="dialog"
+            aria-modal="true"
+          >
             <div className="modal-header">
               <div>
                 <p>RENAME FOLDER</p>
-                <h2>Change folder name</h2>
+
+                <h2>
+                  Change folder name
+                </h2>
               </div>
 
               <button
                 className="modal-close"
                 type="button"
-                onClick={closeRenameDialog}
+                onClick={
+                  closeRenameDialog
+                }
+                aria-label="Close"
               >
                 ×
               </button>
@@ -1559,6 +2226,7 @@ function App() {
                 <span>Folder name</span>
 
                 <input
+                  type="text"
                   value={renameLabel}
                   onChange={(event) => {
                     setRenameLabel(
@@ -1579,7 +2247,12 @@ function App() {
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={closeRenameDialog}
+                  onClick={
+                    closeRenameDialog
+                  }
+                  disabled={
+                    renameLoading
+                  }
                 >
                   Cancel
                 </button>
@@ -1587,7 +2260,9 @@ function App() {
                 <button
                   className="primary-button"
                   type="submit"
-                  disabled={renameLoading}
+                  disabled={
+                    renameLoading
+                  }
                 >
                   {renameLoading
                     ? "Renaming..."
@@ -1600,21 +2275,41 @@ function App() {
       )}
 
       {removeTarget && (
-        <div className="modal-backdrop">
-          <section className="create-modal">
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              closeRemoveDialog();
+            }
+          }}
+        >
+          <section
+            className="create-modal"
+            role="dialog"
+            aria-modal="true"
+          >
             <div className="modal-header">
               <div>
-                <p>REMOVE SYNC FOLDER</p>
+                <p>
+                  REMOVE SYNC FOLDER
+                </p>
 
                 <h2>
-                  Remove {removeTarget.label}?
+                  Remove{" "}
+                  {removeTarget.label}?
                 </h2>
               </div>
 
               <button
                 className="modal-close"
                 type="button"
-                onClick={closeRemoveDialog}
+                onClick={
+                  closeRemoveDialog
+                }
+                aria-label="Close"
               >
                 ×
               </button>
@@ -1623,13 +2318,26 @@ function App() {
             <div className="create-form">
               <div className="remove-warning">
                 <strong>
-                  Your files will not be deleted.
+                  Your files will not
+                  be deleted.
                 </strong>
 
                 <p>
-                  This only removes the folder from
-                  Syncthing and OpenUI.
+                  This only removes
+                  the folder from
+                  Syncthing and
+                  OpenUI.
                 </p>
+              </div>
+
+              <div className="remove-path">
+                <span>
+                  Files will remain at:
+                </span>
+
+                <strong>
+                  {removeTarget.path}
+                </strong>
               </div>
 
               {removeError && (
@@ -1642,7 +2350,12 @@ function App() {
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={closeRemoveDialog}
+                  onClick={
+                    closeRemoveDialog
+                  }
+                  disabled={
+                    removeLoading
+                  }
                 >
                   Cancel
                 </button>
@@ -1651,7 +2364,9 @@ function App() {
                   className="danger-button"
                   type="button"
                   onClick={removeFolder}
-                  disabled={removeLoading}
+                  disabled={
+                    removeLoading
+                  }
                 >
                   {removeLoading
                     ? "Removing..."
