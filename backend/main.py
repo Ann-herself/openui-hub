@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
-
+from datetime import datetime, timezone
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
@@ -927,3 +927,289 @@ async def remove_syncthing_folder(
                 "Make sure Syncthing is running."
             ),
         ) from error
+
+    # =========================================================
+# File browser
+# =========================================================
+
+def resolve_folder_browser_path(
+    folder_root: Path,
+    relative_path: str,
+) -> Path:
+    """
+    Resolve a path inside a Syncthing folder while blocking
+    absolute paths and directory traversal attempts.
+    """
+
+    root_path = folder_root.expanduser().resolve(
+        strict=False
+    )
+
+    clean_relative_path = (
+        relative_path
+        .strip()
+        .replace("\\", "/")
+    )
+
+    relative = Path(clean_relative_path)
+
+    if relative.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The browser path must be relative "
+                "to the sync folder."
+            ),
+        )
+
+    if ".." in relative.parts:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Access outside the sync folder "
+                "is not allowed."
+            ),
+        )
+
+    target_path = (
+        root_path / relative
+    ).resolve(
+        strict=False
+    )
+
+    try:
+        common_path = os.path.commonpath(
+            [
+                normalize_path(root_path),
+                normalize_path(target_path),
+            ]
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Access outside the sync folder "
+                "is not allowed."
+            ),
+        ) from error
+
+    if common_path != normalize_path(root_path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Access outside the sync folder "
+                "is not allowed."
+            ),
+        )
+
+    return target_path
+
+
+def build_folder_breadcrumbs(
+    folder_label: str,
+    relative_path: Path,
+) -> list[dict[str, str]]:
+    """Create navigation breadcrumbs for the file browser."""
+
+    breadcrumbs = [
+        {
+            "label": folder_label,
+            "path": "",
+        }
+    ]
+
+    current_parts: list[str] = []
+
+    for part in relative_path.parts:
+        if part in {"", "."}:
+            continue
+
+        current_parts.append(part)
+
+        breadcrumbs.append(
+            {
+                "label": part,
+                "path": "/".join(current_parts),
+            }
+        )
+
+    return breadcrumbs
+
+
+@app.get(
+    "/api/syncthing/folders/{folder_id}/files",
+)
+async def list_syncthing_folder_files(
+    folder_id: str,
+    path: str = "",
+) -> dict[str, Any]:
+    """
+    List the files and subfolders inside a configured
+    Syncthing folder.
+    """
+
+    folder_config = await get_syncthing_folder_config(
+        folder_id
+    )
+
+    configured_path = folder_config.get("path")
+
+    if not configured_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The selected folder does not have "
+                "a valid local path."
+            ),
+        )
+
+    folder_root = Path(
+        str(configured_path)
+    ).expanduser().resolve(
+        strict=False
+    )
+
+    if not folder_root.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The sync folder does not exist "
+                "on this computer."
+            ),
+        )
+
+    if not folder_root.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The configured sync path "
+                "is not a folder."
+            ),
+        )
+
+    target_path = resolve_folder_browser_path(
+        folder_root,
+        path,
+    )
+
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The requested folder does not exist."
+            ),
+        )
+
+    if not target_path.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The requested path is not a folder."
+            ),
+        )
+
+    entries: list[dict[str, Any]] = []
+
+    try:
+        for entry in target_path.iterdir():
+            # Hide Syncthing's internal marker folder.
+            if entry.name == ".stfolder":
+                continue
+
+            try:
+                file_information = entry.stat()
+            except OSError:
+                # Skip an item that Windows cannot currently read.
+                continue
+
+            is_folder = entry.is_dir()
+
+            entry_relative_path = entry.relative_to(
+                folder_root
+            ).as_posix()
+
+            entries.append(
+                {
+                    "name": entry.name,
+                    "path": entry_relative_path,
+                    "type": (
+                        "folder"
+                        if is_folder
+                        else "file"
+                    ),
+                    "is_folder": is_folder,
+                    "size_bytes": (
+                        None
+                        if is_folder
+                        else file_information.st_size
+                    ),
+                    "extension": (
+                        ""
+                        if is_folder
+                        else entry.suffix.lower()
+                    ),
+                    "modified_at": datetime.fromtimestamp(
+                        file_information.st_mtime,
+                        tz=timezone.utc,
+                    ).isoformat(),
+                }
+            )
+
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "OpenUI does not have permission "
+                "to read this folder."
+            ),
+        ) from error
+
+    except OSError as error:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Windows could not read "
+                "the selected folder."
+            ),
+        ) from error
+
+    # Show folders first, then files alphabetically.
+    entries.sort(
+        key=lambda item: (
+            not item["is_folder"],
+            item["name"].lower(),
+        )
+    )
+
+    current_relative_path = target_path.relative_to(
+        folder_root
+    )
+
+    current_path_text = (
+        ""
+        if str(current_relative_path) == "."
+        else current_relative_path.as_posix()
+    )
+
+    folder_label = str(
+        folder_config.get("label")
+        or folder_config.get("id")
+        or folder_id
+    )
+
+    return {
+        "folder": {
+            "id": folder_id,
+            "label": folder_label,
+            "root_path": str(folder_root),
+        },
+        "current_path": current_path_text,
+        "breadcrumbs": build_folder_breadcrumbs(
+            folder_label,
+            current_relative_path,
+        ),
+        "entries": entries,
+        "entry_count": len(entries),
+    }
