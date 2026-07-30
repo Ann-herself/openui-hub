@@ -32,10 +32,87 @@ type FolderType =
 
 type FolderAction = "open" | "scan";
 
+type BrowserEntry = {
+  name: string;
+  path: string;
+  type: "folder" | "file";
+  is_folder: boolean;
+  size_bytes: number | null;
+  extension: string;
+  modified_at: string;
+};
+
+type BrowserBreadcrumb = {
+  label: string;
+  path: string;
+};
+
+type BrowserResponse = {
+  folder: {
+    id: string;
+    label: string;
+    root_path: string;
+  };
+  current_path: string;
+  breadcrumbs: BrowserBreadcrumb[];
+  entries: BrowserEntry[];
+  entry_count: number;
+};
+
 const API_URL = "http://127.0.0.1:8000";
 
 async function readResponseData(response: Response) {
   return response.json().catch(() => ({}));
+}
+
+function formatFileSize(size: number | null) {
+  if (size === null) {
+    return "";
+  }
+
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  if (size < 1024 * 1024 * 1024) {
+    return `${(
+      size /
+      (1024 * 1024)
+    ).toFixed(1)} MB`;
+  }
+
+  return `${(
+    size /
+    (1024 * 1024 * 1024)
+  ).toFixed(1)} GB`;
+}
+
+function formatModifiedDate(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getFileLabel(entry: BrowserEntry) {
+  const extension = entry.extension
+    .replace(".", "")
+    .toUpperCase();
+
+  return extension || "FILE";
 }
 
 function App() {
@@ -56,6 +133,19 @@ function App() {
     useState<string | null>(null);
 
   const [notice, setNotice] = useState("");
+
+  // File browser
+  const [selectedFolder, setSelectedFolder] =
+    useState<SyncthingFolder | null>(null);
+
+  const [browserData, setBrowserData] =
+    useState<BrowserResponse | null>(null);
+
+  const [browserLoading, setBrowserLoading] =
+    useState(false);
+
+  const [browserError, setBrowserError] =
+    useState("");
 
   // Create folder modal
   const [isCreateOpen, setIsCreateOpen] =
@@ -89,7 +179,7 @@ function App() {
   const [renameError, setRenameError] =
     useState("");
 
-  // Remove confirmation modal
+  // Remove modal
   const [removeTarget, setRemoveTarget] =
     useState<SyncthingFolder | null>(null);
 
@@ -142,6 +232,74 @@ function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadBrowser(
+    folder: SyncthingFolder,
+    path = "",
+  ) {
+    try {
+      setSelectedFolder(folder);
+      setBrowserLoading(true);
+      setBrowserError("");
+      setActiveMenuId(null);
+
+      const query = new URLSearchParams();
+
+      if (path) {
+        query.set("path", path);
+      }
+
+      const suffix = query.toString()
+        ? `?${query.toString()}`
+        : "";
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          folder.id,
+        )}/files${suffix}`,
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "Could not load the folder contents.",
+        );
+      }
+
+      setBrowserData(data);
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not load the folder contents.";
+
+      setBrowserError(message);
+    } finally {
+      setBrowserLoading(false);
+    }
+  }
+
+  function returnToMyFiles() {
+    setSelectedFolder(null);
+    setBrowserData(null);
+    setBrowserError("");
+    setSearch("");
+  }
+
+  async function refreshCurrentView() {
+    if (selectedFolder) {
+      await loadBrowser(
+        selectedFolder,
+        browserData?.current_path || "",
+      );
+      return;
+    }
+
+    await loadData();
   }
 
   useEffect(() => {
@@ -197,6 +355,26 @@ function App() {
     });
   }, [folders, search]);
 
+  const filteredEntries = useMemo(() => {
+    if (!browserData) {
+      return [];
+    }
+
+    const searchValue =
+      search.trim().toLowerCase();
+
+    if (!searchValue) {
+      return browserData.entries;
+    }
+
+    return browserData.entries.filter(
+      (entry) =>
+        entry.name
+          .toLowerCase()
+          .includes(searchValue),
+    );
+  }, [browserData, search]);
+
   function showSuccess(message: string) {
     setNotice(message);
   }
@@ -204,10 +382,6 @@ function App() {
   function showError(message: string) {
     setNotice(`Error: ${message}`);
   }
-
-  // -------------------------------------------------------
-  // Create folder
-  // -------------------------------------------------------
 
   function openCreateDialog() {
     setFolderLabel("");
@@ -299,10 +473,6 @@ function App() {
     }
   }
 
-  // -------------------------------------------------------
-  // Open and scan
-  // -------------------------------------------------------
-
   async function runFolderAction(
     folder: SyncthingFolder,
     action: FolderAction,
@@ -328,7 +498,7 @@ function App() {
       if (!response.ok) {
         throw new Error(
           data.detail ||
-            `Could not ${action} the folder.`,
+            "The folder action failed.",
         );
       }
 
@@ -353,19 +523,16 @@ function App() {
     }
   }
 
-  // -------------------------------------------------------
-  // Pause and resume
-  // -------------------------------------------------------
-
   async function toggleFolderPaused(
     folder: SyncthingFolder,
   ) {
     const newPausedValue = !folder.paused;
-    const actionKey = `${folder.id}-paused`;
 
     try {
       setActiveMenuId(null);
-      setActionLoading(actionKey);
+      setActionLoading(
+        `${folder.id}-paused`,
+      );
 
       const response = await fetch(
         `${API_URL}/api/syncthing/folders/${encodeURIComponent(
@@ -410,10 +577,6 @@ function App() {
       setActionLoading(null);
     }
   }
-
-  // -------------------------------------------------------
-  // Rename
-  // -------------------------------------------------------
 
   function openRenameDialog(
     folder: SyncthingFolder,
@@ -500,10 +663,6 @@ function App() {
       setRenameLoading(false);
     }
   }
-
-  // -------------------------------------------------------
-  // Remove from Syncthing
-  // -------------------------------------------------------
 
   function openRemoveDialog(
     folder: SyncthingFolder,
@@ -596,6 +755,7 @@ function App() {
           <button
             className="nav-item active"
             type="button"
+            onClick={returnToMyFiles}
           >
             <span className="nav-icon">▣</span>
             My Files
@@ -665,7 +825,11 @@ function App() {
 
             <input
               type="search"
-              placeholder="Search in your files"
+              placeholder={
+                selectedFolder
+                  ? "Search in this folder"
+                  : "Search in your files"
+              }
               value={search}
               onChange={(event) => {
                 setSearch(event.target.value);
@@ -676,8 +840,8 @@ function App() {
           <button
             className="refresh-button"
             type="button"
-            onClick={loadData}
-            aria-label="Refresh folders"
+            onClick={refreshCurrentView}
+            aria-label="Refresh"
             title="Refresh"
           >
             ↻
@@ -693,11 +857,16 @@ function App() {
                 OPENUI HUB
               </p>
 
-              <h1>My Files</h1>
+              <h1>
+                {selectedFolder
+                  ? selectedFolder.label
+                  : "My Files"}
+              </h1>
 
               <p>
-                Your Syncthing folders in one
-                simple place.
+                {selectedFolder
+                  ? "Browse files stored in this sync folder."
+                  : "Your Syncthing folders in one simple place."}
               </p>
             </div>
 
@@ -709,263 +878,413 @@ function App() {
             )}
           </div>
 
-          {loading && (
-            <div className="state-card">
-              Loading your folders...
-            </div>
-          )}
-
-          {error && (
-            <div className="state-card error-card">
-              <strong>Connection failed</strong>
-              <p>{error}</p>
-
-              <button
-                type="button"
-                onClick={loadData}
-              >
-                Try again
-              </button>
-            </div>
-          )}
-
-          {!loading && !error && (
+          {!selectedFolder && (
             <>
-              <div className="section-heading">
-                <div>
-                  <h2>Folders</h2>
-
-                  <span>
-                    {filteredFolders.length} folder
-                    {filteredFolders.length === 1
-                      ? ""
-                      : "s"}
-                  </span>
-                </div>
-
-                <button
-                  className="view-button active"
-                  type="button"
-                  title="Grid view"
-                >
-                  ▦
-                </button>
-              </div>
-
-              {filteredFolders.length > 0 ? (
-                <div className="folder-grid">
-                  {filteredFolders.map(
-                    (folder) => (
-                      <article
-                        className={
-                          folder.paused
-                            ? "folder-card paused-folder"
-                            : "folder-card"
-                        }
-                        key={folder.id}
-                      >
-                        <div className="folder-card-top">
-                          <div className="folder-icon">
-                            <span />
-                          </div>
-
-                          <div
-                            className="folder-menu-wrap"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                            }}
-                          >
-                            <button
-                              className="more-button"
-                              type="button"
-                              title="Folder options"
-                              aria-label={`Options for ${folder.label}`}
-                              onClick={() => {
-                                setActiveMenuId(
-                                  activeMenuId ===
-                                    folder.id
-                                    ? null
-                                    : folder.id,
-                                );
-                              }}
-                            >
-                              •••
-                            </button>
-
-                            {activeMenuId ===
-                              folder.id && (
-                              <div className="folder-menu">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    runFolderAction(
-                                      folder,
-                                      "open",
-                                    );
-                                  }}
-                                  disabled={
-                                    actionLoading !==
-                                    null
-                                  }
-                                >
-                                  <span>↗</span>
-                                  Open folder
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    runFolderAction(
-                                      folder,
-                                      "scan",
-                                    );
-                                  }}
-                                  disabled={
-                                    actionLoading !==
-                                    null ||
-                                    folder.paused
-                                  }
-                                >
-                                  <span>↻</span>
-                                  Rescan
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    toggleFolderPaused(
-                                      folder,
-                                    );
-                                  }}
-                                  disabled={
-                                    actionLoading !==
-                                    null
-                                  }
-                                >
-                                  <span>
-                                    {folder.paused
-                                      ? "▶"
-                                      : "Ⅱ"}
-                                  </span>
-
-                                  {folder.paused
-                                    ? "Resume sync"
-                                    : "Pause sync"}
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    openRenameDialog(
-                                      folder,
-                                    );
-                                  }}
-                                  disabled={
-                                    actionLoading !==
-                                    null
-                                  }
-                                >
-                                  <span>✎</span>
-                                  Rename
-                                </button>
-
-                                <button
-                                  className="menu-danger"
-                                  type="button"
-                                  onClick={() => {
-                                    openRemoveDialog(
-                                      folder,
-                                    );
-                                  }}
-                                  disabled={
-                                    actionLoading !==
-                                    null
-                                  }
-                                >
-                                  <span>×</span>
-                                  Remove from Syncthing
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        <h3>{folder.label}</h3>
-
-                        <p className="folder-path">
-                          {folder.path}
-                        </p>
-
-                        <div className="folder-meta">
-                          <span
-                            className={
-                              folder.paused
-                                ? "folder-status paused"
-                                : "folder-status"
-                            }
-                          >
-                            {folder.paused
-                              ? "Sync paused"
-                              : "Sync active"}
-                          </span>
-
-                          <span>
-                            {folder.device_count} device
-                            {folder.device_count === 1
-                              ? ""
-                              : "s"}
-                          </span>
-                        </div>
-                      </article>
-                    ),
-                  )}
-                </div>
-              ) : (
-                <div className="empty-state">
-                  <div className="empty-folder">
-                    <span />
-                  </div>
-
-                  <h2>No folders found</h2>
-
-                  <p>
-                    Try another search or create a
-                    new sync folder.
-                  </p>
+              {loading && (
+                <div className="state-card">
+                  Loading your folders...
                 </div>
               )}
 
-              <section className="quick-info">
-                <article>
-                  <span>Syncthing</span>
+              {error && (
+                <div className="state-card error-card">
                   <strong>
-                    {status?.syncthing_version ||
-                      "—"}
+                    Connection failed
                   </strong>
-                </article>
 
-                <article>
-                  <span>System</span>
-                  <strong>
-                    {status
-                      ? `${status.operating_system} · ${status.architecture}`
-                      : "—"}
-                  </strong>
-                </article>
+                  <p>{error}</p>
 
-                <article>
-                  <span>Device</span>
-                  <strong>
-                    {status?.device_id
-                      ? `${status.device_id.slice(
-                          0,
-                          7,
-                        )}…`
-                      : "—"}
-                  </strong>
-                </article>
-              </section>
+                  <button
+                    type="button"
+                    onClick={loadData}
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
+
+              {!loading && !error && (
+                <>
+                  <div className="section-heading">
+                    <div>
+                      <h2>Folders</h2>
+
+                      <span>
+                        {filteredFolders.length} folder
+                        {filteredFolders.length === 1
+                          ? ""
+                          : "s"}
+                      </span>
+                    </div>
+
+                    <button
+                      className="view-button active"
+                      type="button"
+                      title="Grid view"
+                    >
+                      ▦
+                    </button>
+                  </div>
+
+                  <div className="folder-grid">
+                    {filteredFolders.map(
+                      (folder) => (
+                        <article
+                          className={
+                            folder.paused
+                              ? "folder-card paused-folder"
+                              : "folder-card"
+                          }
+                          key={folder.id}
+                          onClick={() => {
+                            setSearch("");
+                            loadBrowser(folder);
+                          }}
+                        >
+                          <div className="folder-card-top">
+                            <div className="folder-icon">
+                              <span />
+                            </div>
+
+                            <div
+                              className="folder-menu-wrap"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                              }}
+                            >
+                              <button
+                                className="more-button"
+                                type="button"
+                                aria-label={`Options for ${folder.label}`}
+                                onClick={() => {
+                                  setActiveMenuId(
+                                    activeMenuId ===
+                                      folder.id
+                                      ? null
+                                      : folder.id,
+                                  );
+                                }}
+                              >
+                                •••
+                              </button>
+
+                              {activeMenuId ===
+                                folder.id && (
+                                <div className="folder-menu">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      runFolderAction(
+                                        folder,
+                                        "open",
+                                      );
+                                    }}
+                                  >
+                                    <span>↗</span>
+                                    Open folder
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      runFolderAction(
+                                        folder,
+                                        "scan",
+                                      );
+                                    }}
+                                    disabled={
+                                      folder.paused
+                                    }
+                                  >
+                                    <span>↻</span>
+                                    Rescan
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      toggleFolderPaused(
+                                        folder,
+                                      );
+                                    }}
+                                    disabled={
+                                      actionLoading !==
+                                      null
+                                    }
+                                  >
+                                    <span>
+                                      {folder.paused
+                                        ? "▶"
+                                        : "Ⅱ"}
+                                    </span>
+
+                                    {folder.paused
+                                      ? "Resume sync"
+                                      : "Pause sync"}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      openRenameDialog(
+                                        folder,
+                                      );
+                                    }}
+                                  >
+                                    <span>✎</span>
+                                    Rename
+                                  </button>
+
+                                  <button
+                                    className="menu-danger"
+                                    type="button"
+                                    onClick={() => {
+                                      openRemoveDialog(
+                                        folder,
+                                      );
+                                    }}
+                                  >
+                                    <span>×</span>
+                                    Remove from Syncthing
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <h3>{folder.label}</h3>
+
+                          <p className="folder-path">
+                            {folder.path}
+                          </p>
+
+                          <div className="folder-meta">
+                            <span
+                              className={
+                                folder.paused
+                                  ? "folder-status paused"
+                                  : "folder-status"
+                              }
+                            >
+                              {folder.paused
+                                ? "Sync paused"
+                                : "Sync active"}
+                            </span>
+
+                            <span>
+                              {folder.device_count} device
+                              {folder.device_count === 1
+                                ? ""
+                                : "s"}
+                            </span>
+                          </div>
+                        </article>
+                      ),
+                    )}
+                  </div>
+
+                  <section className="quick-info">
+                    <article>
+                      <span>Syncthing</span>
+                      <strong>
+                        {status?.syncthing_version ||
+                          "—"}
+                      </strong>
+                    </article>
+
+                    <article>
+                      <span>System</span>
+                      <strong>
+                        {status
+                          ? `${status.operating_system} · ${status.architecture}`
+                          : "—"}
+                      </strong>
+                    </article>
+
+                    <article>
+                      <span>Device</span>
+                      <strong>
+                        {status?.device_id
+                          ? `${status.device_id.slice(
+                              0,
+                              7,
+                            )}…`
+                          : "—"}
+                      </strong>
+                    </article>
+                  </section>
+                </>
+              )}
             </>
+          )}
+
+          {selectedFolder && (
+            <div className="browser-view">
+              <div className="browser-toolbar">
+                <button
+                  className="browser-back-button"
+                  type="button"
+                  onClick={returnToMyFiles}
+                >
+                  ← My Files
+                </button>
+
+                {browserData && (
+                  <nav className="breadcrumbs">
+                    {browserData.breadcrumbs.map(
+                      (breadcrumb, index) => (
+                        <div
+                          className="breadcrumb-part"
+                          key={`${breadcrumb.path}-${index}`}
+                        >
+                          {index > 0 && (
+                            <span>›</span>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              loadBrowser(
+                                selectedFolder,
+                                breadcrumb.path,
+                              );
+                            }}
+                          >
+                            {breadcrumb.label}
+                          </button>
+                        </div>
+                      ),
+                    )}
+                  </nav>
+                )}
+              </div>
+
+              {browserLoading && (
+                <div className="state-card">
+                  Loading folder contents...
+                </div>
+              )}
+
+              {browserError && (
+                <div className="state-card error-card">
+                  <strong>
+                    Could not open folder
+                  </strong>
+
+                  <p>{browserError}</p>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      loadBrowser(
+                        selectedFolder,
+                        browserData?.current_path ||
+                          "",
+                      );
+                    }}
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
+
+              {!browserLoading &&
+                !browserError &&
+                browserData && (
+                  <>
+                    <div className="section-heading">
+                      <div>
+                        <h2>Files</h2>
+
+                        <span>
+                          {filteredEntries.length} item
+                          {filteredEntries.length === 1
+                            ? ""
+                            : "s"}
+                        </span>
+                      </div>
+
+                      <button
+                        className="view-button active"
+                        type="button"
+                        title="Grid view"
+                      >
+                        ▦
+                      </button>
+                    </div>
+
+                    {filteredEntries.length > 0 ? (
+                      <div className="browser-grid">
+                        {filteredEntries.map(
+                          (entry) => (
+                            <article
+                              className={
+                                entry.is_folder
+                                  ? "browser-entry-card clickable"
+                                  : "browser-entry-card"
+                              }
+                              key={entry.path}
+                              onClick={() => {
+                                if (
+                                  entry.is_folder
+                                ) {
+                                  loadBrowser(
+                                    selectedFolder,
+                                    entry.path,
+                                  );
+                                }
+                              }}
+                            >
+                              <div
+                                className={
+                                  entry.is_folder
+                                    ? "browser-entry-icon folder"
+                                    : "browser-entry-icon file"
+                                }
+                              >
+                                {entry.is_folder
+                                  ? ""
+                                  : getFileLabel(entry)}
+                              </div>
+
+                              <h3>{entry.name}</h3>
+
+                              <p>
+                                {entry.is_folder
+                                  ? "Folder"
+                                  : formatFileSize(
+                                      entry.size_bytes,
+                                    )}
+                              </p>
+
+                              <span className="entry-date">
+                                {formatModifiedDate(
+                                  entry.modified_at,
+                                )}
+                              </span>
+                            </article>
+                          ),
+                        )}
+                      </div>
+                    ) : (
+                      <div className="browser-empty">
+                        <div className="empty-folder">
+                          <span />
+                        </div>
+
+                        <h2>
+                          This folder is empty
+                        </h2>
+
+                        <p>
+                          Files and folders placed here
+                          will appear automatically.
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+            </div>
           )}
         </section>
       </main>
@@ -982,38 +1301,19 @@ function App() {
         </div>
       )}
 
-      {/* Create folder modal */}
       {isCreateOpen && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (
-              event.target ===
-              event.currentTarget
-            ) {
-              closeCreateDialog();
-            }
-          }}
-        >
-          <section
-            className="create-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="create-folder-title"
-          >
+        <div className="modal-backdrop">
+          <section className="create-modal">
             <div className="modal-header">
               <div>
                 <p>NEW SYNC FOLDER</p>
-                <h2 id="create-folder-title">
-                  Create a folder
-                </h2>
+                <h2>Create a folder</h2>
               </div>
 
               <button
                 className="modal-close"
                 type="button"
                 onClick={closeCreateDialog}
-                aria-label="Close"
               >
                 ×
               </button>
@@ -1027,8 +1327,6 @@ function App() {
                 <span>Folder name</span>
 
                 <input
-                  type="text"
-                  placeholder="Example: Projects"
                   value={folderLabel}
                   onChange={(event) => {
                     setFolderLabel(
@@ -1040,19 +1338,16 @@ function App() {
               </label>
 
               <label className="form-field">
-                <span>
-                  Location on this computer
-                </span>
+                <span>Location</span>
 
                 <input
-                  type="text"
-                  placeholder="C:/Users/admin/Projects"
                   value={folderPath}
                   onChange={(event) => {
                     setFolderPath(
                       event.target.value,
                     );
                   }}
+                  placeholder="C:/Users/admin/Projects"
                 />
               </label>
 
@@ -1071,13 +1366,11 @@ function App() {
                   <option value="sendreceive">
                     Keep files synchronized everywhere
                   </option>
-
                   <option value="sendonly">
-                    Send files from this device only
+                    Send from this device only
                   </option>
-
                   <option value="receiveonly">
-                    Receive files on this device only
+                    Receive on this device only
                   </option>
                 </select>
               </label>
@@ -1093,7 +1386,6 @@ function App() {
                   className="secondary-button"
                   type="button"
                   onClick={closeCreateDialog}
-                  disabled={createLoading}
                 >
                   Cancel
                 </button>
@@ -1113,38 +1405,19 @@ function App() {
         </div>
       )}
 
-      {/* Rename modal */}
       {renameTarget && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (
-              event.target ===
-              event.currentTarget
-            ) {
-              closeRenameDialog();
-            }
-          }}
-        >
-          <section
-            className="create-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rename-folder-title"
-          >
+        <div className="modal-backdrop">
+          <section className="create-modal">
             <div className="modal-header">
               <div>
                 <p>RENAME FOLDER</p>
-                <h2 id="rename-folder-title">
-                  Change folder name
-                </h2>
+                <h2>Change folder name</h2>
               </div>
 
               <button
                 className="modal-close"
                 type="button"
                 onClick={closeRenameDialog}
-                aria-label="Close"
               >
                 ×
               </button>
@@ -1158,7 +1431,6 @@ function App() {
                 <span>Folder name</span>
 
                 <input
-                  type="text"
                   value={renameLabel}
                   onChange={(event) => {
                     setRenameLabel(
@@ -1167,12 +1439,6 @@ function App() {
                   }}
                   autoFocus
                 />
-
-                <small>
-                  This changes the name shown in
-                  OpenUI and Syncthing. The Windows
-                  folder path will stay unchanged.
-                </small>
               </label>
 
               {renameError && (
@@ -1186,7 +1452,6 @@ function App() {
                   className="secondary-button"
                   type="button"
                   onClick={closeRenameDialog}
-                  disabled={renameLoading}
                 >
                   Cancel
                 </button>
@@ -1206,29 +1471,14 @@ function App() {
         </div>
       )}
 
-      {/* Remove confirmation modal */}
       {removeTarget && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (
-              event.target ===
-              event.currentTarget
-            ) {
-              closeRemoveDialog();
-            }
-          }}
-        >
-          <section
-            className="create-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="remove-folder-title"
-          >
+        <div className="modal-backdrop">
+          <section className="create-modal">
             <div className="modal-header">
               <div>
                 <p>REMOVE SYNC FOLDER</p>
-                <h2 id="remove-folder-title">
+
+                <h2>
                   Remove {removeTarget.label}?
                 </h2>
               </div>
@@ -1237,7 +1487,6 @@ function App() {
                 className="modal-close"
                 type="button"
                 onClick={closeRemoveDialog}
-                aria-label="Close"
               >
                 ×
               </button>
@@ -1250,14 +1499,9 @@ function App() {
                 </strong>
 
                 <p>
-                  This action only removes the folder
-                  from Syncthing and OpenUI.
+                  This only removes the folder from
+                  Syncthing and OpenUI.
                 </p>
-              </div>
-
-              <div className="remove-path">
-                <span>Files will remain at:</span>
-                <strong>{removeTarget.path}</strong>
               </div>
 
               {removeError && (
@@ -1271,7 +1515,6 @@ function App() {
                   className="secondary-button"
                   type="button"
                   onClick={closeRemoveDialog}
-                  disabled={removeLoading}
                 >
                   Cancel
                 </button>
