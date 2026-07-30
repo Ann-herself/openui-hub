@@ -1,5 +1,6 @@
 import os
 import subprocess
+import mimetypes
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-
+from fastapi.responses import FileResponse
 
 # =========================================================
 # Configuration
@@ -1213,3 +1214,163 @@ async def list_syncthing_folder_files(
         "entries": entries,
         "entry_count": len(entries),
     }
+
+# =========================================================
+# File preview and download
+# =========================================================
+
+async def resolve_syncthing_file(
+    folder_id: str,
+    relative_path: str,
+) -> Path:
+    """
+    Resolve one file inside a configured Syncthing folder.
+
+    The existing browser path protection prevents access
+    outside the selected sync folder.
+    """
+
+    if not relative_path.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A file path is required.",
+        )
+
+    folder_config = await get_syncthing_folder_config(
+        folder_id
+    )
+
+    configured_path = folder_config.get("path")
+
+    if not configured_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The selected folder does not have "
+                "a valid local path."
+            ),
+        )
+
+    folder_root = Path(
+        str(configured_path)
+    ).expanduser().resolve(
+        strict=False
+    )
+
+    if not folder_root.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The sync folder does not exist "
+                "on this computer."
+            ),
+        )
+
+    if not folder_root.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The configured sync path "
+                "is not a folder."
+            ),
+        )
+
+    target_file = resolve_folder_browser_path(
+        folder_root,
+        relative_path,
+    )
+
+    if not target_file.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The requested file does not exist.",
+        )
+
+    if not target_file.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The requested path does not belong "
+                "to a file."
+            ),
+        )
+
+    try:
+        target_file.stat()
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "OpenUI does not have permission "
+                "to read this file."
+            ),
+        ) from error
+    except OSError as error:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail="Windows could not read this file.",
+        ) from error
+
+    return target_file
+
+
+@app.get(
+    "/api/syncthing/folders/{folder_id}/files/content",
+    response_class=FileResponse,
+)
+async def preview_syncthing_file(
+    folder_id: str,
+    path: str,
+) -> FileResponse:
+    """
+    Return a file inline so supported types can be previewed
+    by the browser, including images and PDF documents.
+    """
+
+    target_file = await resolve_syncthing_file(
+        folder_id,
+        path,
+    )
+
+    media_type, _ = mimetypes.guess_type(
+        target_file.name
+    )
+
+    return FileResponse(
+        path=target_file,
+        media_type=(
+            media_type
+            or "application/octet-stream"
+        ),
+    )
+
+
+@app.get(
+    "/api/syncthing/folders/{folder_id}/files/download",
+    response_class=FileResponse,
+)
+async def download_syncthing_file(
+    folder_id: str,
+    path: str,
+) -> FileResponse:
+    """Download one file from the selected sync folder."""
+
+    target_file = await resolve_syncthing_file(
+        folder_id,
+        path,
+    )
+
+    media_type, _ = mimetypes.guess_type(
+        target_file.name
+    )
+
+    return FileResponse(
+        path=target_file,
+        media_type=(
+            media_type
+            or "application/octet-stream"
+        ),
+        filename=target_file.name,
+    )
