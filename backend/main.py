@@ -733,3 +733,197 @@ async def scan_syncthing_folder(
                 "Make sure Syncthing is running."
             ),
         ) from error
+
+    # =========================================================
+# Folder controls: pause, resume, rename and remove
+# =========================================================
+
+class UpdateFolderPausedRequest(BaseModel):
+    """Request used to pause or resume a folder."""
+
+    paused: bool
+
+
+class RenameFolderRequest(BaseModel):
+    """Request used to update the displayed folder name."""
+
+    label: str = Field(
+        min_length=1,
+        max_length=128,
+    )
+
+
+async def patch_syncthing_folder(
+    folder_id: str,
+    changes: dict[str, Any],
+) -> None:
+    """Apply partial configuration changes to one folder."""
+
+    await get_syncthing_folder_config(folder_id)
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+        ) as client:
+            response = await client.patch(
+                (
+                    f"{SYNCTHING_URL}"
+                    f"/rest/config/folders/{folder_id}"
+                ),
+                headers=headers,
+                json=changes,
+            )
+
+            response.raise_for_status()
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not update "
+                "the selected folder."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+@app.patch(
+    "/api/syncthing/folders/{folder_id}/paused",
+)
+async def update_syncthing_folder_paused(
+    folder_id: str,
+    request: UpdateFolderPausedRequest,
+) -> dict[str, Any]:
+    """Pause or resume a Syncthing folder."""
+
+    await patch_syncthing_folder(
+        folder_id,
+        {
+            "paused": request.paused,
+        },
+    )
+
+    return {
+        "updated": True,
+        "folder_id": folder_id,
+        "paused": request.paused,
+        "message": (
+            "The folder was paused successfully."
+            if request.paused
+            else "The folder was resumed successfully."
+        ),
+    }
+
+
+@app.patch(
+    "/api/syncthing/folders/{folder_id}/rename",
+)
+async def rename_syncthing_folder(
+    folder_id: str,
+    request: RenameFolderRequest,
+) -> dict[str, Any]:
+    """Change the displayed label of a Syncthing folder."""
+
+    clean_label = request.label.strip()
+
+    if not clean_label:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please enter a folder name.",
+        )
+
+    await patch_syncthing_folder(
+        folder_id,
+        {
+            "label": clean_label,
+        },
+    )
+
+    return {
+        "updated": True,
+        "folder_id": folder_id,
+        "label": clean_label,
+        "message": (
+            "The folder was renamed successfully."
+        ),
+    }
+
+
+@app.delete(
+    "/api/syncthing/folders/{folder_id}",
+)
+async def remove_syncthing_folder(
+    folder_id: str,
+) -> dict[str, Any]:
+    """
+    Remove a folder from Syncthing without deleting
+    the physical files stored on the computer.
+    """
+
+    folder_config = await get_syncthing_folder_config(
+        folder_id
+    )
+
+    folder_label = (
+        folder_config.get("label")
+        or folder_config.get("id")
+        or folder_id
+    )
+
+    folder_path = folder_config.get("path")
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+        ) as client:
+            response = await client.delete(
+                (
+                    f"{SYNCTHING_URL}"
+                    f"/rest/config/folders/{folder_id}"
+                ),
+                headers=headers,
+            )
+
+            response.raise_for_status()
+
+        return {
+            "removed": True,
+            "folder_id": folder_id,
+            "label": folder_label,
+            "path": folder_path,
+            "files_deleted": False,
+            "message": (
+                "The folder was removed from Syncthing. "
+                "The files remain on this computer."
+            ),
+        }
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not remove "
+                "the selected folder."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
