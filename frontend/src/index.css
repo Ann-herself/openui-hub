@@ -282,3 +282,82 @@ select {
   background: #fff3f3;
   color: #a22020;
 }
+
+.folder-menu {
+  width: 210px;
+}
+
+.folder-menu .menu-danger {
+  color: #b3261e;
+}
+
+.folder-menu .menu-danger span {
+  color: #b3261e;
+}
+
+.folder-status.paused {
+  color: #a25b00;
+}
+
+.paused-folder {
+  background: #fbf8f2;
+  border-color: #e8d9bc;
+}
+
+.remove-warning {
+  padding: 15px 16px;
+  border: 1px solid #f0d5aa;
+  border-radius: 12px;
+  background: #fff9ed;
+  color: #6f4700;
+}
+
+.remove-warning strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 14px;
+}
+
+.remove-warning p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.remove-path {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #f5f7fa;
+}
+
+.remove-path span {
+  color: #6f757d;
+  font-size: 12px;
+}
+
+.remove-path strong {
+  overflow-wrap: anywhere;
+  color: #30343a;
+  font-size: 13px;
+}
+
+.danger-button {
+  padding: 11px 18px;
+  border: 1px solid #b3261e;
+  border-radius: 10px;
+  background: #b3261e;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.danger-button:hover {
+  background: #972019;
+}
+
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}

@@ -34,6 +34,10 @@ type FolderAction = "open" | "scan";
 
 const API_URL = "http://127.0.0.1:8000";
 
+async function readResponseData(response: Response) {
+  return response.json().catch(() => ({}));
+}
+
 function App() {
   const [status, setStatus] =
     useState<SyncthingStatus | null>(null);
@@ -45,6 +49,15 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const [activeMenuId, setActiveMenuId] =
+    useState<string | null>(null);
+
+  const [actionLoading, setActionLoading] =
+    useState<string | null>(null);
+
+  const [notice, setNotice] = useState("");
+
+  // Create folder modal
   const [isCreateOpen, setIsCreateOpen] =
     useState(false);
 
@@ -63,13 +76,28 @@ function App() {
   const [createError, setCreateError] =
     useState("");
 
-  const [activeMenuId, setActiveMenuId] =
-    useState<string | null>(null);
+  // Rename modal
+  const [renameTarget, setRenameTarget] =
+    useState<SyncthingFolder | null>(null);
 
-  const [actionLoading, setActionLoading] =
-    useState<string | null>(null);
+  const [renameLabel, setRenameLabel] =
+    useState("");
 
-  const [notice, setNotice] = useState("");
+  const [renameLoading, setRenameLoading] =
+    useState(false);
+
+  const [renameError, setRenameError] =
+    useState("");
+
+  // Remove confirmation modal
+  const [removeTarget, setRemoveTarget] =
+    useState<SyncthingFolder | null>(null);
+
+  const [removeLoading, setRemoveLoading] =
+    useState(false);
+
+  const [removeError, setRemoveError] =
+    useState("");
 
   async function loadData() {
     try {
@@ -83,22 +111,22 @@ function App() {
         ]);
 
       const statusData =
-        await statusResponse.json();
+        await readResponseData(statusResponse);
 
       const foldersData =
-        await foldersResponse.json();
+        await readResponseData(foldersResponse);
 
       if (!statusResponse.ok) {
         throw new Error(
           statusData.detail ||
-            "Could not load Syncthing status",
+            "Could not load Syncthing status.",
         );
       }
 
       if (!foldersResponse.ok) {
         throw new Error(
           foldersData.detail ||
-            "Could not load folders",
+            "Could not load folders.",
         );
       }
 
@@ -108,7 +136,7 @@ function App() {
       const message =
         requestError instanceof Error
           ? requestError.message
-          : "An unknown error occurred";
+          : "An unknown error occurred.";
 
       setError(message);
     } finally {
@@ -169,6 +197,18 @@ function App() {
     });
   }, [folders, search]);
 
+  function showSuccess(message: string) {
+    setNotice(message);
+  }
+
+  function showError(message: string) {
+    setNotice(`Error: ${message}`);
+  }
+
+  // -------------------------------------------------------
+  // Create folder
+  // -------------------------------------------------------
+
   function openCreateDialog() {
     setFolderLabel("");
     setFolderPath("");
@@ -227,9 +267,8 @@ function App() {
         },
       );
 
-      const data = await response
-        .json()
-        .catch(() => ({}));
+      const data =
+        await readResponseData(response);
 
       if (!response.ok) {
         throw new Error(
@@ -242,7 +281,8 @@ function App() {
       setFolderLabel("");
       setFolderPath("");
       setFolderType("sendreceive");
-      setNotice(
+
+      showSuccess(
         `${cleanLabel} was created successfully.`,
       );
 
@@ -259,6 +299,10 @@ function App() {
     }
   }
 
+  // -------------------------------------------------------
+  // Open and scan
+  // -------------------------------------------------------
+
   async function runFolderAction(
     folder: SyncthingFolder,
     action: FolderAction,
@@ -268,7 +312,6 @@ function App() {
     try {
       setActiveMenuId(null);
       setActionLoading(actionKey);
-      setNotice("");
 
       const response = await fetch(
         `${API_URL}/api/syncthing/folders/${encodeURIComponent(
@@ -279,9 +322,8 @@ function App() {
         },
       );
 
-      const data = await response
-        .json()
-        .catch(() => ({}));
+      const data =
+        await readResponseData(response);
 
       if (!response.ok) {
         throw new Error(
@@ -291,11 +333,11 @@ function App() {
       }
 
       if (action === "open") {
-        setNotice(
+        showSuccess(
           `${folder.label} was opened.`,
         );
       } else {
-        setNotice(
+        showSuccess(
           `Syncthing started scanning ${folder.label}.`,
         );
       }
@@ -305,9 +347,227 @@ function App() {
           ? requestError.message
           : "The folder action failed.";
 
-      setNotice(`Error: ${message}`);
+      showError(message);
     } finally {
       setActionLoading(null);
+    }
+  }
+
+  // -------------------------------------------------------
+  // Pause and resume
+  // -------------------------------------------------------
+
+  async function toggleFolderPaused(
+    folder: SyncthingFolder,
+  ) {
+    const newPausedValue = !folder.paused;
+    const actionKey = `${folder.id}-paused`;
+
+    try {
+      setActiveMenuId(null);
+      setActionLoading(actionKey);
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          folder.id,
+        )}/paused`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            paused: newPausedValue,
+          }),
+        },
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "The folder state could not be changed.",
+        );
+      }
+
+      showSuccess(
+        newPausedValue
+          ? `${folder.label} was paused.`
+          : `${folder.label} was resumed.`,
+      );
+
+      await loadData();
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "The folder state could not be changed.";
+
+      showError(message);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  // -------------------------------------------------------
+  // Rename
+  // -------------------------------------------------------
+
+  function openRenameDialog(
+    folder: SyncthingFolder,
+  ) {
+    setActiveMenuId(null);
+    setRenameTarget(folder);
+    setRenameLabel(folder.label);
+    setRenameError("");
+  }
+
+  function closeRenameDialog() {
+    if (renameLoading) {
+      return;
+    }
+
+    setRenameTarget(null);
+    setRenameLabel("");
+    setRenameError("");
+  }
+
+  async function renameFolder(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    if (!renameTarget) {
+      return;
+    }
+
+    const cleanLabel = renameLabel.trim();
+
+    if (!cleanLabel) {
+      setRenameError(
+        "Please enter a folder name.",
+      );
+      return;
+    }
+
+    try {
+      setRenameLoading(true);
+      setRenameError("");
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          renameTarget.id,
+        )}/rename`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            label: cleanLabel,
+          }),
+        },
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "The folder could not be renamed.",
+        );
+      }
+
+      setRenameTarget(null);
+      setRenameLabel("");
+
+      showSuccess(
+        `Folder renamed to ${cleanLabel}.`,
+      );
+
+      await loadData();
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "The folder could not be renamed.";
+
+      setRenameError(message);
+    } finally {
+      setRenameLoading(false);
+    }
+  }
+
+  // -------------------------------------------------------
+  // Remove from Syncthing
+  // -------------------------------------------------------
+
+  function openRemoveDialog(
+    folder: SyncthingFolder,
+  ) {
+    setActiveMenuId(null);
+    setRemoveTarget(folder);
+    setRemoveError("");
+  }
+
+  function closeRemoveDialog() {
+    if (removeLoading) {
+      return;
+    }
+
+    setRemoveTarget(null);
+    setRemoveError("");
+  }
+
+  async function removeFolder() {
+    if (!removeTarget) {
+      return;
+    }
+
+    try {
+      setRemoveLoading(true);
+      setRemoveError("");
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          removeTarget.id,
+        )}`,
+        {
+          method: "DELETE",
+        },
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "The folder could not be removed.",
+        );
+      }
+
+      const removedLabel = removeTarget.label;
+
+      setRemoveTarget(null);
+
+      showSuccess(
+        `${removedLabel} was removed from Syncthing. Your files were not deleted.`,
+      );
+
+      await loadData();
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "The folder could not be removed.";
+
+      setRemoveError(message);
+    } finally {
+      setRemoveLoading(false);
     }
   }
 
@@ -497,7 +757,11 @@ function App() {
                   {filteredFolders.map(
                     (folder) => (
                       <article
-                        className="folder-card"
+                        className={
+                          folder.paused
+                            ? "folder-card paused-folder"
+                            : "folder-card"
+                        }
                         key={folder.id}
                       >
                         <div className="folder-card-top">
@@ -558,14 +822,68 @@ function App() {
                                   }}
                                   disabled={
                                     actionLoading !==
-                                    null
+                                    null ||
+                                    folder.paused
                                   }
                                 >
                                   <span>↻</span>
-                                  {actionLoading ===
-                                  `${folder.id}-scan`
-                                    ? "Scanning..."
-                                    : "Rescan"}
+                                  Rescan
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    toggleFolderPaused(
+                                      folder,
+                                    );
+                                  }}
+                                  disabled={
+                                    actionLoading !==
+                                    null
+                                  }
+                                >
+                                  <span>
+                                    {folder.paused
+                                      ? "▶"
+                                      : "Ⅱ"}
+                                  </span>
+
+                                  {folder.paused
+                                    ? "Resume sync"
+                                    : "Pause sync"}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    openRenameDialog(
+                                      folder,
+                                    );
+                                  }}
+                                  disabled={
+                                    actionLoading !==
+                                    null
+                                  }
+                                >
+                                  <span>✎</span>
+                                  Rename
+                                </button>
+
+                                <button
+                                  className="menu-danger"
+                                  type="button"
+                                  onClick={() => {
+                                    openRemoveDialog(
+                                      folder,
+                                    );
+                                  }}
+                                  disabled={
+                                    actionLoading !==
+                                    null
+                                  }
+                                >
+                                  <span>×</span>
+                                  Remove from Syncthing
                                 </button>
                               </div>
                             )}
@@ -579,9 +897,15 @@ function App() {
                         </p>
 
                         <div className="folder-meta">
-                          <span>
+                          <span
+                            className={
+                              folder.paused
+                                ? "folder-status paused"
+                                : "folder-status"
+                            }
+                          >
                             {folder.paused
-                              ? "Paused"
+                              ? "Sync paused"
                               : "Sync active"}
                           </span>
 
@@ -658,6 +982,7 @@ function App() {
         </div>
       )}
 
+      {/* Create folder modal */}
       {isCreateOpen && (
         <div
           className="modal-backdrop"
@@ -679,7 +1004,6 @@ function App() {
             <div className="modal-header">
               <div>
                 <p>NEW SYNC FOLDER</p>
-
                 <h2 id="create-folder-title">
                   Create a folder
                 </h2>
@@ -730,11 +1054,6 @@ function App() {
                     );
                   }}
                 />
-
-                <small>
-                  Enter a location inside
-                  C:/Users/admin.
-                </small>
               </label>
 
               <label className="form-field">
@@ -790,6 +1109,185 @@ function App() {
                 </button>
               </div>
             </form>
+          </section>
+        </div>
+      )}
+
+      {/* Rename modal */}
+      {renameTarget && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              closeRenameDialog();
+            }
+          }}
+        >
+          <section
+            className="create-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rename-folder-title"
+          >
+            <div className="modal-header">
+              <div>
+                <p>RENAME FOLDER</p>
+                <h2 id="rename-folder-title">
+                  Change folder name
+                </h2>
+              </div>
+
+              <button
+                className="modal-close"
+                type="button"
+                onClick={closeRenameDialog}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            <form
+              className="create-form"
+              onSubmit={renameFolder}
+            >
+              <label className="form-field">
+                <span>Folder name</span>
+
+                <input
+                  type="text"
+                  value={renameLabel}
+                  onChange={(event) => {
+                    setRenameLabel(
+                      event.target.value,
+                    );
+                  }}
+                  autoFocus
+                />
+
+                <small>
+                  This changes the name shown in
+                  OpenUI and Syncthing. The Windows
+                  folder path will stay unchanged.
+                </small>
+              </label>
+
+              {renameError && (
+                <div className="form-error">
+                  {renameError}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={closeRenameDialog}
+                  disabled={renameLoading}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={renameLoading}
+                >
+                  {renameLoading
+                    ? "Renaming..."
+                    : "Save name"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {/* Remove confirmation modal */}
+      {removeTarget && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              closeRemoveDialog();
+            }
+          }}
+        >
+          <section
+            className="create-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="remove-folder-title"
+          >
+            <div className="modal-header">
+              <div>
+                <p>REMOVE SYNC FOLDER</p>
+                <h2 id="remove-folder-title">
+                  Remove {removeTarget.label}?
+                </h2>
+              </div>
+
+              <button
+                className="modal-close"
+                type="button"
+                onClick={closeRemoveDialog}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="create-form">
+              <div className="remove-warning">
+                <strong>
+                  Your files will not be deleted.
+                </strong>
+
+                <p>
+                  This action only removes the folder
+                  from Syncthing and OpenUI.
+                </p>
+              </div>
+
+              <div className="remove-path">
+                <span>Files will remain at:</span>
+                <strong>{removeTarget.path}</strong>
+              </div>
+
+              {removeError && (
+                <div className="form-error">
+                  {removeError}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={closeRemoveDialog}
+                  disabled={removeLoading}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="danger-button"
+                  type="button"
+                  onClick={removeFolder}
+                  disabled={removeLoading}
+                >
+                  {removeLoading
+                    ? "Removing..."
+                    : "Remove from Syncthing"}
+                </button>
+              </div>
+            </div>
           </section>
         </div>
       )}
