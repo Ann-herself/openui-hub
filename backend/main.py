@@ -7,7 +7,14 @@ from uuid import uuid4
 from datetime import datetime, timezone
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, status
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
@@ -1374,3 +1381,419 @@ async def download_syncthing_file(
         ),
         filename=target_file.name,
     )
+
+# =========================================================
+# Upload files and create folders inside sync folders
+# =========================================================
+
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+OPENUI_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+
+
+class CreateInnerFolderRequest(BaseModel):
+    """Create a subfolder inside a Syncthing folder."""
+
+    parent_path: str = Field(
+        default="",
+        max_length=1000,
+    )
+
+    name: str = Field(
+        min_length=1,
+        max_length=255,
+    )
+
+
+def validate_item_name(
+    value: str,
+    item_description: str,
+) -> str:
+    """
+    Validate a file or directory name before using it
+    on the local filesystem.
+    """
+
+    clean_name = value.strip()
+
+    if not clean_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Please enter a valid {item_description} name.",
+        )
+
+    if clean_name in {".", ".."}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"The selected {item_description} name is not allowed.",
+        )
+
+    if "/" in clean_name or "\\" in clean_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"The {item_description} name cannot contain "
+                "path separators."
+            ),
+        )
+
+    if clean_name.lower() == ".stfolder":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The name .stfolder is reserved by Syncthing."
+            ),
+        )
+
+    if clean_name.rstrip(" .") != clean_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"The {item_description} name cannot end "
+                "with a space or period."
+            ),
+        )
+
+    windows_reserved_names = {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }
+
+    first_name_part = clean_name.split(".", 1)[0].upper()
+
+    if first_name_part in windows_reserved_names:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"The selected {item_description} name "
+                "is reserved by Windows."
+            ),
+        )
+
+    return clean_name
+
+
+async def resolve_syncthing_directory(
+    folder_id: str,
+    relative_path: str = "",
+) -> tuple[Path, Path]:
+    """
+    Return the Syncthing folder root and one safe directory
+    inside it.
+    """
+
+    folder_config = await get_syncthing_folder_config(
+        folder_id
+    )
+
+    configured_path = folder_config.get("path")
+
+    if not configured_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The selected sync folder does not have "
+                "a valid local path."
+            ),
+        )
+
+    folder_root = Path(
+        str(configured_path)
+    ).expanduser().resolve(
+        strict=False
+    )
+
+    if not folder_root.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The sync folder does not exist "
+                "on this computer."
+            ),
+        )
+
+    if not folder_root.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The configured sync path is not a directory."
+            ),
+        )
+
+    target_directory = resolve_folder_browser_path(
+        folder_root,
+        relative_path,
+    )
+
+    if not target_directory.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The selected destination folder does not exist."
+            ),
+        )
+
+    if not target_directory.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The selected destination is not a folder."
+            ),
+        )
+
+    return folder_root, target_directory
+
+
+@app.post(
+    "/api/syncthing/folders/{folder_id}/files/folders",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_inner_folder(
+    folder_id: str,
+    request: CreateInnerFolderRequest,
+) -> dict[str, Any]:
+    """Create a directory inside a sync folder."""
+
+    folder_root, parent_directory = (
+        await resolve_syncthing_directory(
+            folder_id,
+            request.parent_path,
+        )
+    )
+
+    clean_name = validate_item_name(
+        request.name,
+        "folder",
+    )
+
+    new_folder = parent_directory / clean_name
+
+    if new_folder.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A file or folder with this name already exists."
+            ),
+        )
+
+    try:
+        new_folder.mkdir()
+        folder_information = new_folder.stat()
+
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "OpenUI does not have permission "
+                "to create this folder."
+            ),
+        ) from error
+
+    except OSError as error:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Windows could not create the folder."
+            ),
+        ) from error
+
+    relative_path = new_folder.relative_to(
+        folder_root
+    ).as_posix()
+
+    return {
+        "created": True,
+        "entry": {
+            "name": new_folder.name,
+            "path": relative_path,
+            "type": "folder",
+            "is_folder": True,
+            "size_bytes": None,
+            "extension": "",
+            "modified_at": datetime.fromtimestamp(
+                folder_information.st_mtime,
+                tz=timezone.utc,
+            ).isoformat(),
+        },
+        "message": (
+            "The folder was created successfully."
+        ),
+    }
+
+
+@app.post(
+    "/api/syncthing/folders/{folder_id}/files/upload",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_syncthing_file(
+    folder_id: str,
+    path: str = Form(default=""),
+    overwrite: bool = Form(default=False),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Upload one file into a selected sync directory."""
+
+    folder_root, target_directory = (
+        await resolve_syncthing_directory(
+            folder_id,
+            path,
+        )
+    )
+
+    original_filename = (
+        file.filename
+        or ""
+    )
+
+    safe_filename = Path(
+        original_filename.replace("\\", "/")
+    ).name
+
+    safe_filename = validate_item_name(
+        safe_filename,
+        "file",
+    )
+
+    target_file = target_directory / safe_filename
+
+    if target_file.exists() and target_file.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A folder with this name already exists."
+            ),
+        )
+
+    if target_file.exists() and not overwrite:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A file with this name already exists. "
+                "Enable overwrite to replace it."
+            ),
+        )
+
+    temporary_file = target_directory / (
+        f".openui-upload-{uuid4().hex}.tmp"
+    )
+
+    uploaded_size = 0
+
+    try:
+        with temporary_file.open("wb") as output:
+            while True:
+                chunk = await file.read(
+                    UPLOAD_CHUNK_SIZE
+                )
+
+                if not chunk:
+                    break
+
+                uploaded_size += len(chunk)
+
+                if (
+                    uploaded_size
+                    > OPENUI_MAX_UPLOAD_BYTES
+                ):
+                    raise HTTPException(
+                        status_code=(
+                            status.HTTP_413_CONTENT_TOO_LARGE
+                        ),
+                        detail=(
+                            "The uploaded file exceeds "
+                            "the 512 MB limit."
+                        ),
+                    )
+
+                output.write(chunk)
+
+        os.replace(
+            temporary_file,
+            target_file,
+        )
+
+        file_information = target_file.stat()
+
+    except HTTPException:
+        if temporary_file.exists():
+            temporary_file.unlink(
+                missing_ok=True
+            )
+
+        raise
+
+    except PermissionError as error:
+        if temporary_file.exists():
+            temporary_file.unlink(
+                missing_ok=True
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "OpenUI does not have permission "
+                "to save this file."
+            ),
+        ) from error
+
+    except OSError as error:
+        if temporary_file.exists():
+            temporary_file.unlink(
+                missing_ok=True
+            )
+
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Windows could not save the uploaded file."
+            ),
+        ) from error
+
+    finally:
+        await file.close()
+
+    relative_file_path = target_file.relative_to(
+        folder_root
+    ).as_posix()
+
+    return {
+        "uploaded": True,
+        "entry": {
+            "name": target_file.name,
+            "path": relative_file_path,
+            "type": "file",
+            "is_folder": False,
+            "size_bytes": file_information.st_size,
+            "extension": target_file.suffix.lower(),
+            "modified_at": datetime.fromtimestamp(
+                file_information.st_mtime,
+                tz=timezone.utc,
+            ).isoformat(),
+        },
+        "message": (
+            "The file was uploaded successfully."
+        ),
+    }
