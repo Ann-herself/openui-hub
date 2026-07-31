@@ -102,9 +102,12 @@ type ModalShellProps = {
   wide?: boolean;
 };
 
-const API_URL = (
-  import.meta.env.VITE_API_URL ?? ""
-).replace(/\/+$/, "");
+const API_URL = import.meta.env.DEV
+  ? (
+      import.meta.env.VITE_API_URL ||
+      "http://127.0.0.1:8001"
+    ).replace(/\/+$/, "")
+  : "";
 
 async function readJson(response: Response): Promise<ApiData> {
   return response.json().catch(() => ({} as ApiData));
