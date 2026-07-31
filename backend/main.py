@@ -2,6 +2,7 @@ import os
 import subprocess
 import mimetypes
 import shutil
+import asyncio
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -2200,3 +2201,274 @@ async def delete_syncthing_browser_entry(
             f"{item_name} was deleted permanently."
         ),
     }
+
+# =========================================================
+# Syncthing devices
+# =========================================================
+
+
+@app.get("/api/syncthing/devices")
+async def get_syncthing_devices() -> list[dict[str, Any]]:
+    """
+    Return configured remote Syncthing devices together
+    with their current connection information.
+    """
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+        ) as client:
+            (
+                devices_response,
+                connections_response,
+                local_status_response,
+            ) = await asyncio.gather(
+                client.get(
+                    f"{SYNCTHING_URL}/rest/config/devices",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{SYNCTHING_URL}/rest/system/connections",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{SYNCTHING_URL}/rest/system/status",
+                    headers=headers,
+                ),
+            )
+
+        devices_response.raise_for_status()
+        connections_response.raise_for_status()
+        local_status_response.raise_for_status()
+
+        devices_data = devices_response.json()
+        connections_data = connections_response.json()
+        local_status_data = local_status_response.json()
+
+        if not isinstance(devices_data, list):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing returned an invalid "
+                    "devices response."
+                ),
+            )
+
+        if not isinstance(connections_data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing returned an invalid "
+                    "connections response."
+                ),
+            )
+
+        if not isinstance(local_status_data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing returned an invalid "
+                    "system status response."
+                ),
+            )
+
+        connection_map = connections_data.get(
+            "connections",
+            {},
+        )
+
+        if not isinstance(connection_map, dict):
+            connection_map = {}
+
+        local_device_id = str(
+            local_status_data.get("myID", "")
+        ).strip()
+
+        normalized_devices: list[dict[str, Any]] = []
+
+        for device in devices_data:
+            if not isinstance(device, dict):
+                continue
+
+            device_id = str(
+                device.get("deviceID", "")
+            ).strip()
+
+            if not device_id:
+                continue
+
+            # The local device is managed by this Syncthing
+            # instance and should not appear as a remote device.
+            if (
+                local_device_id
+                and device_id == local_device_id
+            ):
+                continue
+
+            raw_connection = connection_map.get(
+                device_id,
+                {},
+            )
+
+            connection = (
+                raw_connection
+                if isinstance(raw_connection, dict)
+                else {}
+            )
+
+            raw_addresses = device.get(
+                "addresses",
+                [],
+            )
+
+            addresses = (
+                [
+                    str(address)
+                    for address in raw_addresses
+                    if str(address).strip()
+                ]
+                if isinstance(raw_addresses, list)
+                else []
+            )
+
+            connected = bool(
+                connection.get("connected", False)
+            )
+
+            paused = bool(
+                device.get(
+                    "paused",
+                    connection.get("paused", False),
+                )
+            )
+
+            device_name = str(
+                device.get("name", "")
+            ).strip()
+
+            normalized_devices.append(
+                {
+                    "id": device_id,
+                    "name": (
+                        device_name
+                        or f"Device {device_id[:7]}"
+                    ),
+                    "short_id": device_id[:7],
+                    "addresses": addresses,
+                    "connected": connected,
+                    "paused": paused,
+                    "connection_address": str(
+                        connection.get("address", "")
+                    ),
+                    "connection_type": str(
+                        connection.get("type", "")
+                    ),
+                    "client_version": str(
+                        connection.get(
+                            "clientVersion",
+                            "",
+                        )
+                    ),
+                    "is_local_network": bool(
+                        connection.get(
+                            "isLocal",
+                            False,
+                        )
+                    ),
+                    "in_bytes_total": int(
+                        connection.get(
+                            "inBytesTotal",
+                            0,
+                        )
+                        or 0
+                    ),
+                    "out_bytes_total": int(
+                        connection.get(
+                            "outBytesTotal",
+                            0,
+                        )
+                        or 0
+                    ),
+                    "connected_since": str(
+                        connection.get(
+                            "startedAt",
+                            "",
+                        )
+                    ),
+                    "last_seen": str(
+                        connection.get(
+                            "at",
+                            "",
+                        )
+                    ),
+                    "introducer": bool(
+                        device.get(
+                            "introducer",
+                            False,
+                        )
+                    ),
+                    "auto_accept_folders": bool(
+                        device.get(
+                            "autoAcceptFolders",
+                            False,
+                        )
+                    ),
+                    "compression": str(
+                        device.get(
+                            "compression",
+                            "metadata",
+                        )
+                    ),
+                }
+            )
+
+        normalized_devices.sort(
+            key=lambda item: (
+                not item["connected"],
+                item["name"].casefold(),
+            )
+        )
+
+        return normalized_devices
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        response_status = (
+            error.response.status_code
+            if error.response is not None
+            else status.HTTP_502_BAD_GATEWAY
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing rejected the devices request "
+                f"with status {response_status}."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+    except (
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing returned device data "
+                "in an unexpected format."
+            ),
+        ) from error
