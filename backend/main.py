@@ -2472,3 +2472,777 @@ async def get_syncthing_devices() -> list[dict[str, Any]]:
                 "in an unexpected format."
             ),
         ) from error
+
+    # =========================================================
+# Syncthing device management
+# =========================================================
+
+
+class CreateSyncthingDeviceRequest(BaseModel):
+    """Add a remote device to Syncthing."""
+
+    device_id: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    name: str = Field(
+        min_length=1,
+        max_length=128,
+    )
+
+    addresses: list[str] = Field(
+        default_factory=lambda: ["dynamic"],
+    )
+
+    compression: Literal[
+        "metadata",
+        "always",
+        "never",
+    ] = "metadata"
+
+    paused: bool = False
+    introducer: bool = False
+    auto_accept_folders: bool = False
+
+
+class RenameSyncthingDeviceRequest(BaseModel):
+    """Change the friendly name of a remote device."""
+
+    name: str = Field(
+        min_length=1,
+        max_length=128,
+    )
+
+
+class UpdateSyncthingDevicePausedRequest(BaseModel):
+    """Pause or resume communication with a device."""
+
+    paused: bool
+
+
+def normalize_device_name(
+    value: str,
+) -> str:
+    """Normalize and validate a friendly device name."""
+
+    clean_name = " ".join(
+        value.strip().split()
+    )
+
+    if not clean_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please enter a device name.",
+        )
+
+    if len(clean_name) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The device name cannot exceed "
+                "128 characters."
+            ),
+        )
+
+    if any(
+        ord(character) < 32
+        for character in clean_name
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The device name contains "
+                "invalid characters."
+            ),
+        )
+
+    return clean_name
+
+
+def normalize_device_addresses(
+    addresses: list[str],
+) -> list[str]:
+    """Normalize the connection addresses for a device."""
+
+    clean_addresses: list[str] = []
+
+    for address in addresses:
+        clean_address = str(address).strip()
+
+        if not clean_address:
+            continue
+
+        if len(clean_address) > 500:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "One of the device addresses "
+                    "is too long."
+                ),
+            )
+
+        if any(
+            ord(character) < 32
+            for character in clean_address
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "One of the device addresses "
+                    "contains invalid characters."
+                ),
+            )
+
+        if clean_address not in clean_addresses:
+            clean_addresses.append(
+                clean_address
+            )
+
+    if not clean_addresses:
+        clean_addresses.append("dynamic")
+
+    return clean_addresses
+
+
+async def normalize_syncthing_device_id(
+    device_id: str,
+) -> str:
+    """
+    Ask Syncthing to validate and normalize a device ID.
+    """
+
+    clean_device_id = device_id.strip()
+
+    if not clean_device_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please enter a device ID.",
+        )
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+        ) as client:
+            response = await client.get(
+                f"{SYNCTHING_URL}/rest/svc/deviceid",
+                headers=headers,
+                params={
+                    "id": clean_device_id,
+                },
+            )
+
+        response.raise_for_status()
+        response_data = response.json()
+
+        if not isinstance(response_data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing returned an invalid "
+                    "device ID response."
+                ),
+            )
+
+        validation_error = response_data.get(
+            "error"
+        )
+
+        if validation_error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(validation_error),
+            )
+
+        normalized_id = str(
+            response_data.get("id", "")
+        ).strip()
+
+        if not normalized_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The device ID is not valid.",
+            )
+
+        return normalized_id
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Syncthing could not validate "
+                "the device ID."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing returned device ID data "
+                "in an unexpected format."
+            ),
+        ) from error
+
+
+async def get_local_syncthing_device_id() -> str:
+    """Return the ID of this local Syncthing device."""
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+        ) as client:
+            response = await client.get(
+                f"{SYNCTHING_URL}/rest/system/status",
+                headers=headers,
+            )
+
+        response.raise_for_status()
+        response_data = response.json()
+
+        if not isinstance(response_data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing returned an invalid "
+                    "system status response."
+                ),
+            )
+
+        local_device_id = str(
+            response_data.get("myID", "")
+        ).strip()
+
+        if not local_device_id:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Syncthing did not return "
+                    "the local device ID."
+                ),
+            )
+
+        return local_device_id
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing rejected the local "
+                "device request."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing returned local device "
+                "data in an unexpected format."
+            ),
+        ) from error
+
+
+async def syncthing_device_exists(
+    device_id: str,
+) -> bool:
+    """Return whether a configured device already exists."""
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+        ) as client:
+            response = await client.get(
+                (
+                    f"{SYNCTHING_URL}/rest/config/"
+                    f"devices/{device_id}"
+                ),
+                headers=headers,
+            )
+
+        if response.status_code == 404:
+            return False
+
+        response.raise_for_status()
+
+        return True
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not check "
+                "the selected device."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+@app.get(
+    "/api/syncthing/devices/local",
+)
+async def get_local_syncthing_device() -> dict[str, Any]:
+    """Return information needed to share this device."""
+
+    local_device_id = (
+        await get_local_syncthing_device_id()
+    )
+
+    return {
+        "id": local_device_id,
+        "short_id": local_device_id[:7],
+        "message": (
+            "Share this device ID with another "
+            "Syncthing device to connect them."
+        ),
+    }
+
+
+@app.post(
+    "/api/syncthing/devices",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_syncthing_device(
+    request: CreateSyncthingDeviceRequest,
+) -> dict[str, Any]:
+    """Add a new remote device to Syncthing."""
+
+    normalized_device_id = (
+        await normalize_syncthing_device_id(
+            request.device_id
+        )
+    )
+
+    local_device_id = (
+        await get_local_syncthing_device_id()
+    )
+
+    if normalized_device_id == local_device_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "You cannot add this computer "
+                "as its own remote device."
+            ),
+        )
+
+    if await syncthing_device_exists(
+        normalized_device_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This device is already registered "
+                "in Syncthing."
+            ),
+        )
+
+    clean_name = normalize_device_name(
+        request.name
+    )
+
+    clean_addresses = (
+        normalize_device_addresses(
+            request.addresses
+        )
+    )
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+        ) as client:
+            defaults_response = await client.get(
+                (
+                    f"{SYNCTHING_URL}/rest/config/"
+                    "defaults/device"
+                ),
+                headers=headers,
+            )
+
+            defaults_response.raise_for_status()
+
+            device_configuration = (
+                defaults_response.json()
+            )
+
+            if not isinstance(
+                device_configuration,
+                dict,
+            ):
+                raise HTTPException(
+                    status_code=(
+                        status.HTTP_502_BAD_GATEWAY
+                    ),
+                    detail=(
+                        "Syncthing returned an invalid "
+                        "default device configuration."
+                    ),
+                )
+
+            device_configuration.update(
+                {
+                    "deviceID":
+                        normalized_device_id,
+                    "name": clean_name,
+                    "addresses":
+                        clean_addresses,
+                    "compression":
+                        request.compression,
+                    "paused":
+                        request.paused,
+                    "introducer":
+                        request.introducer,
+                    "autoAcceptFolders":
+                        request.auto_accept_folders,
+                }
+            )
+
+            create_response = await client.post(
+                (
+                    f"{SYNCTHING_URL}/rest/config/"
+                    "devices"
+                ),
+                headers=headers,
+                json=device_configuration,
+            )
+
+            create_response.raise_for_status()
+
+        return {
+            "created": True,
+            "device": {
+                "id": normalized_device_id,
+                "short_id":
+                    normalized_device_id[:7],
+                "name": clean_name,
+                "addresses": clean_addresses,
+                "compression":
+                    request.compression,
+                "paused": request.paused,
+                "introducer":
+                    request.introducer,
+                "auto_accept_folders":
+                    request.auto_accept_folders,
+            },
+            "message": (
+                f"{clean_name} was added "
+                "successfully."
+            ),
+        }
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not add "
+                "the selected device."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+    except (
+        TypeError,
+        ValueError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing returned device "
+                "configuration data in an "
+                "unexpected format."
+            ),
+        ) from error
+
+
+@app.patch(
+    "/api/syncthing/devices/{device_id}/rename",
+)
+async def rename_syncthing_device(
+    device_id: str,
+    request: RenameSyncthingDeviceRequest,
+) -> dict[str, Any]:
+    """Rename an existing remote device."""
+
+    normalized_device_id = (
+        await normalize_syncthing_device_id(
+            device_id
+        )
+    )
+
+    clean_name = normalize_device_name(
+        request.name
+    )
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+        ) as client:
+            response = await client.patch(
+                (
+                    f"{SYNCTHING_URL}/rest/config/"
+                    f"devices/{normalized_device_id}"
+                ),
+                headers=headers,
+                json={
+                    "name": clean_name,
+                },
+            )
+
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "The selected device "
+                    "does not exist."
+                ),
+            )
+
+        response.raise_for_status()
+
+        return {
+            "renamed": True,
+            "id": normalized_device_id,
+            "name": clean_name,
+            "message": (
+                f"Device renamed to {clean_name}."
+            ),
+        }
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not rename "
+                "the selected device."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+@app.patch(
+    "/api/syncthing/devices/{device_id}/paused",
+)
+async def update_syncthing_device_paused(
+    device_id: str,
+    request: UpdateSyncthingDevicePausedRequest,
+) -> dict[str, Any]:
+    """Pause or resume an existing remote device."""
+
+    normalized_device_id = (
+        await normalize_syncthing_device_id(
+            device_id
+        )
+    )
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+        ) as client:
+            response = await client.patch(
+                (
+                    f"{SYNCTHING_URL}/rest/config/"
+                    f"devices/{normalized_device_id}"
+                ),
+                headers=headers,
+                json={
+                    "paused": request.paused,
+                },
+            )
+
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "The selected device "
+                    "does not exist."
+                ),
+            )
+
+        response.raise_for_status()
+
+        return {
+            "updated": True,
+            "id": normalized_device_id,
+            "paused": request.paused,
+            "message": (
+                "Device paused successfully."
+                if request.paused
+                else "Device resumed successfully."
+            ),
+        }
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not change "
+                "the selected device state."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+@app.delete(
+    "/api/syncthing/devices/{device_id}",
+)
+async def delete_syncthing_device(
+    device_id: str,
+) -> dict[str, Any]:
+    """Remove a remote device from Syncthing."""
+
+    normalized_device_id = (
+        await normalize_syncthing_device_id(
+            device_id
+        )
+    )
+
+    local_device_id = (
+        await get_local_syncthing_device_id()
+    )
+
+    if normalized_device_id == local_device_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "The local Syncthing device "
+                "cannot be removed."
+            ),
+        )
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+        ) as client:
+            response = await client.delete(
+                (
+                    f"{SYNCTHING_URL}/rest/config/"
+                    f"devices/{normalized_device_id}"
+                ),
+                headers=headers,
+            )
+
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "The selected device "
+                    "does not exist."
+                ),
+            )
+
+        response.raise_for_status()
+
+        return {
+            "deleted": True,
+            "id": normalized_device_id,
+            "message": (
+                "The device was removed "
+                "from Syncthing."
+            ),
+        }
+
+    except HTTPException:
+        raise
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing could not remove "
+                "the selected device."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
