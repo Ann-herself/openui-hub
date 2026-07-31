@@ -1,12 +1,14 @@
-import os
-import subprocess
-import mimetypes
-import shutil
 import asyncio
+import mimetypes
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
-from datetime import datetime, timezone
+
 import httpx
 from dotenv import load_dotenv
 from fastapi import (
@@ -18,8 +20,9 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 # =========================================================
 # Configuration
@@ -245,7 +248,7 @@ async def get_syncthing_folder_config(
 # OpenUI routes
 # =========================================================
 
-@app.get("/")
+@app.get("/api/info")
 def home() -> dict[str, str]:
     """Return basic OpenUI server information."""
 
@@ -746,7 +749,7 @@ async def scan_syncthing_folder(
             ),
         ) from error
 
-    # =========================================================
+# =========================================================
 # Folder controls: pause, resume, rename and remove
 # =========================================================
 
@@ -940,7 +943,7 @@ async def remove_syncthing_folder(
             ),
         ) from error
 
-    # =========================================================
+# =========================================================
 # File browser
 # =========================================================
 
@@ -3246,3 +3249,77 @@ async def delete_syncthing_device(
                 "Make sure Syncthing is running."
             ),
         ) from error
+
+# =========================================================
+# OpenUI production frontend
+# =========================================================
+
+
+def get_openui_resource_path(*parts: str) -> Path:
+    """
+    Resolve bundled resources in development and
+    PyInstaller-packaged environments.
+    """
+
+    bundled_root = getattr(sys, "_MEIPASS", None)
+
+    if bundled_root:
+        return Path(str(bundled_root)).joinpath(*parts)
+
+    project_root = Path(__file__).resolve().parent.parent
+    return project_root.joinpath(*parts)
+
+
+FRONTEND_DIST_DIR = get_openui_resource_path(
+    "frontend",
+    "dist",
+)
+
+
+if FRONTEND_DIST_DIR.is_dir():
+    frontend_assets_directory = FRONTEND_DIST_DIR / "assets"
+
+    if frontend_assets_directory.is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=frontend_assets_directory),
+            name="openui-assets",
+        )
+
+    @app.get(
+        "/{frontend_path:path}",
+        include_in_schema=False,
+    )
+    async def serve_openui_frontend(
+        frontend_path: str,
+    ) -> FileResponse:
+        """
+        Serve the React production application.
+        Existing files are returned directly; other
+        frontend routes fall back to index.html.
+        """
+
+        resolved_dist_directory = FRONTEND_DIST_DIR.resolve()
+        requested_file = (
+            FRONTEND_DIST_DIR / frontend_path
+        ).resolve()
+
+        try:
+            requested_file.relative_to(
+                resolved_dist_directory
+            )
+        except ValueError:
+            requested_file = FRONTEND_DIST_DIR / "index.html"
+
+        if frontend_path and requested_file.is_file():
+            return FileResponse(requested_file)
+
+        index_file = FRONTEND_DIST_DIR / "index.html"
+
+        if not index_file.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The OpenUI frontend build is not available.",
+            )
+
+        return FileResponse(index_file)
