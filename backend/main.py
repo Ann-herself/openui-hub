@@ -1,6 +1,7 @@
 import os
 import subprocess
 import mimetypes
+import shutil
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -1795,5 +1796,405 @@ async def upload_syncthing_file(
         },
         "message": (
             "The file was uploaded successfully."
+        ),
+    }
+
+# =========================================================
+# Rename and delete files or folders inside sync folders
+# =========================================================
+
+
+class RenameBrowserEntryRequest(BaseModel):
+    """Rename a file or folder inside a Syncthing directory."""
+
+    path: str = Field(
+        min_length=1,
+        max_length=2000,
+    )
+
+    new_name: str = Field(
+        min_length=1,
+        max_length=255,
+    )
+
+
+async def resolve_syncthing_item_path(
+    folder_id: str,
+    relative_path: str,
+) -> tuple[Path, Path]:
+    """
+    Resolve one existing file or folder safely inside a
+    configured Syncthing folder.
+    """
+
+    folder_config = await get_syncthing_folder_config(
+        folder_id
+    )
+
+    configured_path = folder_config.get("path")
+
+    if not configured_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The selected sync folder does not have "
+                "a valid local path."
+            ),
+        )
+
+    folder_root = Path(
+        str(configured_path)
+    ).expanduser().resolve(
+        strict=False
+    )
+
+    if not folder_root.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The sync folder does not exist "
+                "on this computer."
+            ),
+        )
+
+    clean_relative_path = (
+        relative_path
+        .strip()
+        .replace("\\", "/")
+    )
+
+    if (
+        not clean_relative_path
+        or clean_relative_path in {".", "/"}
+        or clean_relative_path.startswith("/")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Select a file or folder inside "
+                "the sync folder."
+            ),
+        )
+
+    raw_parts = clean_relative_path.split("/")
+
+    path_parts = [
+        part
+        for part in raw_parts
+        if part
+    ]
+
+    if not path_parts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The selected path is not valid.",
+        )
+
+    if any(
+        part in {".", ".."} or ":" in part
+        for part in path_parts
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "The selected path contains "
+                "invalid components."
+            ),
+        )
+
+    reserved_syncthing_items = {
+        ".stfolder",
+        ".stignore",
+        ".stversions",
+    }
+
+    if any(
+        part.casefold() in reserved_syncthing_items
+        for part in path_parts
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This Syncthing system item "
+                "cannot be modified."
+            ),
+        )
+
+    candidate_path = folder_root.joinpath(
+        *path_parts
+    )
+
+    if candidate_path.is_symlink():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Symbolic links cannot be managed "
+                "through OpenUI."
+            ),
+        )
+
+    target_path = candidate_path.resolve(
+        strict=False
+    )
+
+    try:
+        target_path.relative_to(folder_root)
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "The selected item is outside "
+                "the sync folder."
+            ),
+        ) from error
+
+    if not target_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "The selected file or folder "
+                "does not exist."
+            ),
+        )
+
+    return folder_root, target_path
+
+
+@app.patch(
+    "/api/syncthing/folders/{folder_id}/files/rename",
+)
+async def rename_syncthing_browser_entry(
+    folder_id: str,
+    request: RenameBrowserEntryRequest,
+) -> dict[str, Any]:
+    """Rename a file or folder inside a sync folder."""
+
+    folder_root, source_path = (
+        await resolve_syncthing_item_path(
+            folder_id,
+            request.path,
+        )
+    )
+
+    clean_name = validate_item_name(
+        request.new_name,
+        "file or folder",
+    )
+
+    if clean_name.casefold() in {
+        ".stfolder",
+        ".stignore",
+        ".stversions",
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This name is reserved by Syncthing."
+            ),
+        )
+
+    if clean_name == source_path.name:
+        source_information = source_path.stat()
+
+        return {
+            "renamed": False,
+            "entry": {
+                "name": source_path.name,
+                "path": source_path.relative_to(
+                    folder_root
+                ).as_posix(),
+                "type": (
+                    "folder"
+                    if source_path.is_dir()
+                    else "file"
+                ),
+                "is_folder": source_path.is_dir(),
+                "size_bytes": (
+                    None
+                    if source_path.is_dir()
+                    else source_information.st_size
+                ),
+                "extension": (
+                    ""
+                    if source_path.is_dir()
+                    else source_path.suffix.lower()
+                ),
+                "modified_at": datetime.fromtimestamp(
+                    source_information.st_mtime,
+                    tz=timezone.utc,
+                ).isoformat(),
+            },
+            "message": (
+                "The item already has this name."
+            ),
+        }
+
+    target_path = source_path.parent / clean_name
+
+    try:
+        target_path.resolve(
+            strict=False
+        ).relative_to(folder_root)
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "The new path would be outside "
+                "the sync folder."
+            ),
+        ) from error
+
+    if (
+        target_path.exists()
+        and target_path != source_path
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A file or folder with this name "
+                "already exists."
+            ),
+        )
+
+    try:
+        # Windows requires a temporary rename when only
+        # changing uppercase or lowercase characters.
+        if (
+            source_path.name.casefold()
+            == clean_name.casefold()
+        ):
+            temporary_path = source_path.parent / (
+                f".openui-rename-{uuid4().hex}.tmp"
+            )
+
+            source_path.rename(temporary_path)
+            temporary_path.rename(target_path)
+
+        else:
+            source_path.rename(target_path)
+
+        renamed_information = target_path.stat()
+
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "OpenUI does not have permission "
+                "to rename this item."
+            ),
+        ) from error
+
+    except OSError as error:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Windows could not rename "
+                "the selected item."
+            ),
+        ) from error
+
+    return {
+        "renamed": True,
+        "entry": {
+            "name": target_path.name,
+            "path": target_path.relative_to(
+                folder_root
+            ).as_posix(),
+            "type": (
+                "folder"
+                if target_path.is_dir()
+                else "file"
+            ),
+            "is_folder": target_path.is_dir(),
+            "size_bytes": (
+                None
+                if target_path.is_dir()
+                else renamed_information.st_size
+            ),
+            "extension": (
+                ""
+                if target_path.is_dir()
+                else target_path.suffix.lower()
+            ),
+            "modified_at": datetime.fromtimestamp(
+                renamed_information.st_mtime,
+                tz=timezone.utc,
+            ).isoformat(),
+        },
+        "message": (
+            "The item was renamed successfully."
+        ),
+    }
+
+
+@app.delete(
+    "/api/syncthing/folders/{folder_id}/files",
+)
+async def delete_syncthing_browser_entry(
+    folder_id: str,
+    path: str,
+) -> dict[str, Any]:
+    """
+    Permanently delete one file or folder from
+    the selected Syncthing directory.
+    """
+
+    folder_root, target_path = (
+        await resolve_syncthing_item_path(
+            folder_id,
+            path,
+        )
+    )
+
+    relative_path = target_path.relative_to(
+        folder_root
+    ).as_posix()
+
+    item_name = target_path.name
+
+    item_type = (
+        "folder"
+        if target_path.is_dir()
+        else "file"
+    )
+
+    try:
+        if target_path.is_dir():
+            shutil.rmtree(target_path)
+
+        else:
+            target_path.unlink()
+
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "OpenUI does not have permission "
+                "to delete this item."
+            ),
+        ) from error
+
+    except OSError as error:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Windows could not delete "
+                "the selected item."
+            ),
+        ) from error
+
+    return {
+        "deleted": True,
+        "name": item_name,
+        "path": relative_path,
+        "type": item_type,
+        "message": (
+            f"{item_name} was deleted permanently."
         ),
     }

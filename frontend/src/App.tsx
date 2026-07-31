@@ -64,12 +64,41 @@ type DirectoryUploadFile = File & {
   webkitRelativePath?: string;
 };
 
-const API_URL = "http://127.0.0.1:8000";
+type ApiResponseData = {
+  detail?: unknown;
+  message?: unknown;
+  [key: string]: unknown;
+};
+
+const API_URL = "http://127.0.0.1:8001";
 
 async function readResponseData(
   response: Response,
-): Promise<any> {
-  return response.json().catch(() => ({}));
+): Promise<ApiResponseData> {
+  return response
+    .json()
+    .catch(() => ({} as ApiResponseData));
+}
+
+function getResponseMessage(
+  data: ApiResponseData,
+  fallback: string,
+) {
+  if (
+    typeof data.detail === "string" &&
+    data.detail.trim()
+  ) {
+    return data.detail;
+  }
+
+  if (
+    typeof data.message === "string" &&
+    data.message.trim()
+  ) {
+    return data.message;
+  }
+
+  return fallback;
 }
 
 function formatFileSize(size: number | null) {
@@ -167,9 +196,7 @@ function buildFileUrl(
 function joinBrowserPath(...parts: string[]) {
   return parts
     .flatMap((part) =>
-      part
-        .replaceAll("\\", "/")
-        .split("/"),
+      part.replaceAll("\\", "/").split("/"),
     )
     .map((part) => part.trim())
     .filter(Boolean)
@@ -189,6 +216,11 @@ function App() {
 
   const [activeMenuId, setActiveMenuId] =
     useState<string | null>(null);
+
+  const [
+    activeEntryMenuPath,
+    setActiveEntryMenuPath,
+  ] = useState<string | null>(null);
 
   const [actionLoading, setActionLoading] =
     useState<string | null>(null);
@@ -219,33 +251,35 @@ function App() {
     useState<BrowserEntry | null>(null);
 
   /*
-   * New menu and single-file upload
+   * New menu and uploads
    */
 
   const [isNewMenuOpen, setIsNewMenuOpen] =
     useState(false);
 
-  const [isInnerFolderOpen, setIsInnerFolderOpen] =
-    useState(false);
+  const [
+    isInnerFolderOpen,
+    setIsInnerFolderOpen,
+  ] = useState(false);
 
   const [innerFolderName, setInnerFolderName] =
     useState("");
 
-  const [innerFolderLoading, setInnerFolderLoading] =
-    useState(false);
+  const [
+    innerFolderLoading,
+    setInnerFolderLoading,
+  ] = useState(false);
 
-  const [innerFolderError, setInnerFolderError] =
-    useState("");
+  const [
+    innerFolderError,
+    setInnerFolderError,
+  ] = useState("");
 
   const [uploadLoading, setUploadLoading] =
     useState(false);
 
   const uploadInputRef =
     useRef<HTMLInputElement | null>(null);
-
-  /*
-   * Complete-folder upload
-   */
 
   const [
     folderUploadLoading,
@@ -264,7 +298,7 @@ function App() {
     useRef<HTMLInputElement | null>(null);
 
   /*
-   * Create Syncthing folder modal
+   * Create main Syncthing folder
    */
 
   const [isCreateOpen, setIsCreateOpen] =
@@ -286,7 +320,7 @@ function App() {
     useState("");
 
   /*
-   * Rename Syncthing folder modal
+   * Rename main Syncthing folder
    */
 
   const [renameTarget, setRenameTarget] =
@@ -302,7 +336,7 @@ function App() {
     useState("");
 
   /*
-   * Remove Syncthing folder modal
+   * Remove main Syncthing folder
    */
 
   const [removeTarget, setRemoveTarget] =
@@ -315,8 +349,45 @@ function App() {
     useState("");
 
   /*
-   * Load the main folder dashboard
+   * Rename internal file or folder
    */
+
+  const [
+    entryRenameTarget,
+    setEntryRenameTarget,
+  ] = useState<BrowserEntry | null>(null);
+
+  const [entryRenameName, setEntryRenameName] =
+    useState("");
+
+  const [
+    entryRenameLoading,
+    setEntryRenameLoading,
+  ] = useState(false);
+
+  const [
+    entryRenameError,
+    setEntryRenameError,
+  ] = useState("");
+
+  /*
+   * Delete internal file or folder
+   */
+
+  const [
+    entryDeleteTarget,
+    setEntryDeleteTarget,
+  ] = useState<BrowserEntry | null>(null);
+
+  const [
+    entryDeleteLoading,
+    setEntryDeleteLoading,
+  ] = useState(false);
+
+  const [
+    entryDeleteError,
+    setEntryDeleteError,
+  ] = useState("");
 
   async function loadData() {
     try {
@@ -341,20 +412,29 @@ function App() {
 
       if (!statusResponse.ok) {
         throw new Error(
-          statusData.detail ||
+          getResponseMessage(
+            statusData,
             "Could not load Syncthing status.",
+          ),
         );
       }
 
       if (!foldersResponse.ok) {
         throw new Error(
-          foldersData.detail ||
+          getResponseMessage(
+            foldersData,
             "Could not load folders.",
+          ),
         );
       }
 
-      setStatus(statusData);
-      setFolders(foldersData);
+      setStatus(
+        statusData as unknown as SyncthingStatus,
+      );
+
+      setFolders(
+        foldersData as unknown as SyncthingFolder[],
+      );
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -366,10 +446,6 @@ function App() {
     }
   }
 
-  /*
-   * Load the contents of a Syncthing folder
-   */
-
   async function loadBrowser(
     folder: SyncthingFolder,
     path = "",
@@ -379,6 +455,7 @@ function App() {
       setBrowserLoading(true);
       setBrowserError("");
       setActiveMenuId(null);
+      setActiveEntryMenuPath(null);
       setIsNewMenuOpen(false);
       setPreviewEntry(null);
 
@@ -403,12 +480,16 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "Could not load the folder contents.",
+          ),
         );
       }
 
-      setBrowserData(data);
+      setBrowserData(
+        data as unknown as BrowserResponse,
+      );
     } catch (requestError) {
       setBrowserError(
         requestError instanceof Error
@@ -426,6 +507,7 @@ function App() {
     setBrowserError("");
     setPreviewEntry(null);
     setIsNewMenuOpen(false);
+    setActiveEntryMenuPath(null);
     setSearch("");
   }
 
@@ -443,12 +525,8 @@ function App() {
   }
 
   useEffect(() => {
-    loadData();
+    void loadData();
   }, []);
-
-  /*
-   * Add folder-selection support to the hidden input.
-   */
 
   useEffect(() => {
     const input =
@@ -467,13 +545,10 @@ function App() {
     }
   }, []);
 
-  /*
-   * Close dropdown menus when clicking outside.
-   */
-
   useEffect(() => {
     function closeMenus() {
       setActiveMenuId(null);
+      setActiveEntryMenuPath(null);
       setIsNewMenuOpen(false);
     }
 
@@ -490,10 +565,6 @@ function App() {
     };
   }, []);
 
-  /*
-   * Automatically hide success and error notices.
-   */
-
   useEffect(() => {
     if (!notice) {
       return;
@@ -508,18 +579,18 @@ function App() {
     };
   }, [notice]);
 
-  /*
-   * Close file preview and dropdowns with Escape.
-   */
-
   useEffect(() => {
     function closeWithEscape(
       event: KeyboardEvent,
     ) {
-      if (event.key === "Escape") {
-        setPreviewEntry(null);
-        setIsNewMenuOpen(false);
+      if (event.key !== "Escape") {
+        return;
       }
+
+      setPreviewEntry(null);
+      setActiveMenuId(null);
+      setActiveEntryMenuPath(null);
+      setIsNewMenuOpen(false);
     }
 
     window.addEventListener(
@@ -652,8 +723,10 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "The folder could not be created.",
+          ),
         );
       }
 
@@ -679,7 +752,7 @@ function App() {
   }
 
   /*
-   * Open or scan a Syncthing folder
+   * Main Syncthing folder actions
    */
 
   async function runFolderAction(
@@ -706,20 +779,18 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "The folder action failed.",
+          ),
         );
       }
 
-      if (action === "open") {
-        showSuccess(
-          `${folder.label} was opened.`,
-        );
-      } else {
-        showSuccess(
-          `Syncthing started scanning ${folder.label}.`,
-        );
-      }
+      showSuccess(
+        action === "open"
+          ? `${folder.label} was opened.`
+          : `Syncthing started scanning ${folder.label}.`,
+      );
     } catch (requestError) {
       showError(
         requestError instanceof Error
@@ -730,10 +801,6 @@ function App() {
       setActionLoading(null);
     }
   }
-
-  /*
-   * Pause or resume a Syncthing folder
-   */
 
   async function toggleFolderPaused(
     folder: SyncthingFolder,
@@ -766,8 +833,10 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "The folder state could not be changed.",
+          ),
         );
       }
 
@@ -788,10 +857,6 @@ function App() {
       setActionLoading(null);
     }
   }
-
-  /*
-   * Rename a main Syncthing folder
-   */
 
   function openRenameDialog(
     folder: SyncthingFolder,
@@ -855,8 +920,10 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "The folder could not be renamed.",
+          ),
         );
       }
 
@@ -878,10 +945,6 @@ function App() {
       setRenameLoading(false);
     }
   }
-
-  /*
-   * Remove a main Syncthing folder
-   */
 
   function openRemoveDialog(
     folder: SyncthingFolder,
@@ -923,8 +986,10 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "The folder could not be removed.",
+          ),
         );
       }
 
@@ -950,7 +1015,7 @@ function App() {
   }
 
   /*
-   * New button menu
+   * New button
    */
 
   function handleNewButton() {
@@ -966,7 +1031,7 @@ function App() {
   }
 
   /*
-   * Create an inner folder
+   * Create an internal folder
    */
 
   function openInnerFolderDialog() {
@@ -1032,8 +1097,10 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "The folder could not be created.",
+          ),
         );
       }
 
@@ -1106,8 +1173,10 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          getResponseMessage(
+            data,
             "The file could not be uploaded.",
+          ),
         );
       }
 
@@ -1135,8 +1204,7 @@ function App() {
   }
 
   /*
-   * Upload a complete folder while preserving
-   * its subfolder structure.
+   * Upload a complete folder
    */
 
   async function uploadSelectedFolder(
@@ -1181,17 +1249,6 @@ function App() {
       };
     });
 
-    /*
-     * Build all required directory paths.
-     *
-     * Example:
-     * Assets/Images/photo.png
-     *
-     * Creates:
-     * Assets
-     * Assets/Images
-     */
-
     const requiredDirectories =
       new Set<string>();
 
@@ -1218,13 +1275,10 @@ function App() {
       Array.from(
         requiredDirectories,
       ).sort((first, second) => {
-        const firstDepth =
-          first.split("/").length;
-
-        const secondDepth =
-          second.split("/").length;
-
-        return firstDepth - secondDepth;
+        return (
+          first.split("/").length -
+          second.split("/").length
+        );
       });
 
     try {
@@ -1235,11 +1289,6 @@ function App() {
         current: 0,
         total: files.length,
       });
-
-      /*
-       * Create folders from shallowest
-       * to deepest.
-       */
 
       for (
         const relativeDirectory
@@ -1281,12 +1330,6 @@ function App() {
           },
         );
 
-        /*
-         * Status 409 means that a folder
-         * with the same name already exists.
-         * Existing folders can be reused.
-         */
-
         if (
           !response.ok &&
           response.status !== 409
@@ -1295,20 +1338,16 @@ function App() {
             await readResponseData(response);
 
           throw new Error(
-            data.detail ||
+            getResponseMessage(
+              data,
               `Could not create ${relativeDirectory}.`,
+            ),
           );
         }
       }
 
       let uploadedCount = 0;
-
       const failedFiles: string[] = [];
-
-      /*
-       * Upload every file to its matching
-       * destination folder.
-       */
 
       for (const item of uploadItems) {
         const destinationPath =
@@ -1351,8 +1390,10 @@ function App() {
 
           if (!response.ok) {
             throw new Error(
-              data.detail ||
+              getResponseMessage(
+                data,
                 "Upload failed.",
+              ),
             );
           }
 
@@ -1408,6 +1449,193 @@ function App() {
         folderUploadInputRef.current.value =
           "";
       }
+    }
+  }
+
+  /*
+   * Rename an internal file or folder
+   */
+
+  function openEntryRenameDialog(
+    entry: BrowserEntry,
+  ) {
+    setActiveEntryMenuPath(null);
+    setPreviewEntry(null);
+    setEntryRenameTarget(entry);
+    setEntryRenameName(entry.name);
+    setEntryRenameError("");
+  }
+
+  function closeEntryRenameDialog() {
+    if (entryRenameLoading) {
+      return;
+    }
+
+    setEntryRenameTarget(null);
+    setEntryRenameName("");
+    setEntryRenameError("");
+  }
+
+  async function renameBrowserEntry(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    if (
+      !selectedFolder ||
+      !entryRenameTarget
+    ) {
+      return;
+    }
+
+    const cleanName =
+      entryRenameName.trim();
+
+    if (!cleanName) {
+      setEntryRenameError(
+        "Please enter a new name.",
+      );
+
+      return;
+    }
+
+    try {
+      setEntryRenameLoading(true);
+      setEntryRenameError("");
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          selectedFolder.id,
+        )}/files/rename`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            path: entryRenameTarget.path,
+            new_name: cleanName,
+          }),
+        },
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          getResponseMessage(
+            data,
+            "The item could not be renamed.",
+          ),
+        );
+      }
+
+      const oldName =
+        entryRenameTarget.name;
+
+      setEntryRenameTarget(null);
+      setEntryRenameName("");
+
+      showSuccess(
+        `${oldName} was renamed to ${cleanName}.`,
+      );
+
+      await loadBrowser(
+        selectedFolder,
+        browserData?.current_path || "",
+      );
+    } catch (requestError) {
+      setEntryRenameError(
+        requestError instanceof Error
+          ? requestError.message
+          : "The item could not be renamed.",
+      );
+    } finally {
+      setEntryRenameLoading(false);
+    }
+  }
+
+  /*
+   * Permanently delete an internal file or folder
+   */
+
+  function openEntryDeleteDialog(
+    entry: BrowserEntry,
+  ) {
+    setActiveEntryMenuPath(null);
+    setPreviewEntry(null);
+    setEntryDeleteTarget(entry);
+    setEntryDeleteError("");
+  }
+
+  function closeEntryDeleteDialog() {
+    if (entryDeleteLoading) {
+      return;
+    }
+
+    setEntryDeleteTarget(null);
+    setEntryDeleteError("");
+  }
+
+  async function deleteBrowserEntry() {
+    if (
+      !selectedFolder ||
+      !entryDeleteTarget
+    ) {
+      return;
+    }
+
+    try {
+      setEntryDeleteLoading(true);
+      setEntryDeleteError("");
+
+      const query = new URLSearchParams({
+        path: entryDeleteTarget.path,
+      });
+
+      const response = await fetch(
+        `${API_URL}/api/syncthing/folders/${encodeURIComponent(
+          selectedFolder.id,
+        )}/files?${query.toString()}`,
+        {
+          method: "DELETE",
+        },
+      );
+
+      const data =
+        await readResponseData(response);
+
+      if (!response.ok) {
+        throw new Error(
+          getResponseMessage(
+            data,
+            "The item could not be deleted.",
+          ),
+        );
+      }
+
+      const deletedName =
+        entryDeleteTarget.name;
+
+      setEntryDeleteTarget(null);
+
+      showSuccess(
+        `${deletedName} was deleted permanently.`,
+      );
+
+      await loadBrowser(
+        selectedFolder,
+        browserData?.current_path || "",
+      );
+    } catch (requestError) {
+      setEntryDeleteError(
+        requestError instanceof Error
+          ? requestError.message
+          : "The item could not be deleted.",
+      );
+    } finally {
+      setEntryDeleteLoading(false);
     }
   }
 
@@ -1489,7 +1717,6 @@ function App() {
                   type="button"
                   onClick={() => {
                     setIsNewMenuOpen(false);
-
                     uploadInputRef.current?.click();
                   }}
                 >
@@ -1522,7 +1749,7 @@ function App() {
                 event.target.files?.[0];
 
               if (file) {
-                uploadSelectedFile(file);
+                void uploadSelectedFile(file);
               }
             }}
           />
@@ -1540,7 +1767,7 @@ function App() {
                 files &&
                 files.length > 0
               ) {
-                uploadSelectedFolder(files);
+                void uploadSelectedFolder(files);
               }
             }}
           />
@@ -1648,7 +1875,9 @@ function App() {
           <button
             className="refresh-button"
             type="button"
-            onClick={refreshCurrentView}
+            onClick={() => {
+              void refreshCurrentView();
+            }}
             aria-label="Refresh"
             title="Refresh"
           >
@@ -1706,7 +1935,9 @@ function App() {
 
                   <button
                     type="button"
-                    onClick={loadData}
+                    onClick={() => {
+                      void loadData();
+                    }}
                   >
                     Try again
                   </button>
@@ -1754,8 +1985,9 @@ function App() {
                             key={folder.id}
                             onClick={() => {
                               setSearch("");
-
-                              loadBrowser(folder);
+                              void loadBrowser(
+                                folder,
+                              );
                             }}
                           >
                             <div className="folder-card-top">
@@ -1793,7 +2025,7 @@ function App() {
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        runFolderAction(
+                                        void runFolderAction(
                                           folder,
                                           "open",
                                         );
@@ -1808,7 +2040,7 @@ function App() {
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        runFolderAction(
+                                        void runFolderAction(
                                           folder,
                                           "scan",
                                         );
@@ -1826,7 +2058,7 @@ function App() {
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        toggleFolderPaused(
+                                        void toggleFolderPaused(
                                           folder,
                                         );
                                       }}
@@ -2003,7 +2235,7 @@ function App() {
                             onClick={() => {
                               setSearch("");
 
-                              loadBrowser(
+                              void loadBrowser(
                                 selectedFolder,
                                 breadcrumb.path,
                               );
@@ -2038,7 +2270,7 @@ function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      loadBrowser(
+                      void loadBrowser(
                         selectedFolder,
                         browserData?.current_path ||
                           "",
@@ -2093,7 +2325,7 @@ function App() {
                                 ) {
                                   setSearch("");
 
-                                  loadBrowser(
+                                  void loadBrowser(
                                     selectedFolder,
                                     entry.path,
                                   );
@@ -2104,18 +2336,79 @@ function App() {
                                 }
                               }}
                             >
-                              <div
-                                className={
-                                  entry.is_folder
-                                    ? "browser-entry-icon folder"
-                                    : "browser-entry-icon file"
-                                }
-                              >
-                                {entry.is_folder
-                                  ? ""
-                                  : getFileLabel(
-                                      entry,
-                                    )}
+                              <div className="folder-card-top">
+                                <div
+                                  className={
+                                    entry.is_folder
+                                      ? "browser-entry-icon folder"
+                                      : "browser-entry-icon file"
+                                  }
+                                >
+                                  {entry.is_folder
+                                    ? ""
+                                    : getFileLabel(
+                                        entry,
+                                      )}
+                                </div>
+
+                                <div
+                                  className="folder-menu-wrap"
+                                  onClick={(
+                                    event,
+                                  ) => {
+                                    event.stopPropagation();
+                                  }}
+                                >
+                                  <button
+                                    className="more-button"
+                                    type="button"
+                                    aria-label={`Options for ${entry.name}`}
+                                    onClick={() => {
+                                      setActiveEntryMenuPath(
+                                        activeEntryMenuPath ===
+                                          entry.path
+                                          ? null
+                                          : entry.path,
+                                      );
+                                    }}
+                                  >
+                                    •••
+                                  </button>
+
+                                  {activeEntryMenuPath ===
+                                    entry.path && (
+                                    <div className="folder-menu">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          openEntryRenameDialog(
+                                            entry,
+                                          );
+                                        }}
+                                      >
+                                        <span>
+                                          ✎
+                                        </span>
+                                        Rename
+                                      </button>
+
+                                      <button
+                                        className="menu-danger"
+                                        type="button"
+                                        onClick={() => {
+                                          openEntryDeleteDialog(
+                                            entry,
+                                          );
+                                        }}
+                                      >
+                                        <span>
+                                          ×
+                                        </span>
+                                        Delete permanently
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
 
                               <h3>
@@ -2225,9 +2518,7 @@ function App() {
                     className="preview-close-button"
                     type="button"
                     onClick={() => {
-                      setPreviewEntry(
-                        null,
-                      );
+                      setPreviewEntry(null);
                     }}
                     aria-label="Close preview"
                   >
@@ -2305,6 +2596,221 @@ function App() {
           </div>
         )}
 
+      {entryRenameTarget && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              closeEntryRenameDialog();
+            }
+          }}
+        >
+          <section
+            className="create-modal"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="modal-header">
+              <div>
+                <p>
+                  RENAME{" "}
+                  {entryRenameTarget.is_folder
+                    ? "FOLDER"
+                    : "FILE"}
+                </p>
+
+                <h2>
+                  Change item name
+                </h2>
+              </div>
+
+              <button
+                className="modal-close"
+                type="button"
+                onClick={
+                  closeEntryRenameDialog
+                }
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            <form
+              className="create-form"
+              onSubmit={
+                renameBrowserEntry
+              }
+            >
+              <label className="form-field">
+                <span>New name</span>
+
+                <input
+                  type="text"
+                  value={
+                    entryRenameName
+                  }
+                  onChange={(event) => {
+                    setEntryRenameName(
+                      event.target.value,
+                    );
+                  }}
+                  autoFocus
+                />
+
+                <small>
+                  Current location:{" "}
+                  {entryRenameTarget.path}
+                </small>
+              </label>
+
+              {entryRenameError && (
+                <div className="form-error">
+                  {entryRenameError}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={
+                    closeEntryRenameDialog
+                  }
+                  disabled={
+                    entryRenameLoading
+                  }
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={
+                    entryRenameLoading
+                  }
+                >
+                  {entryRenameLoading
+                    ? "Renaming..."
+                    : "Save name"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {entryDeleteTarget && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              closeEntryDeleteDialog();
+            }
+          }}
+        >
+          <section
+            className="create-modal"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="modal-header">
+              <div>
+                <p>
+                  DELETE{" "}
+                  {entryDeleteTarget.is_folder
+                    ? "FOLDER"
+                    : "FILE"}
+                </p>
+
+                <h2>
+                  Delete{" "}
+                  {entryDeleteTarget.name}?
+                </h2>
+              </div>
+
+              <button
+                className="modal-close"
+                type="button"
+                onClick={
+                  closeEntryDeleteDialog
+                }
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="create-form">
+              <div className="remove-warning">
+                <strong>
+                  This action is permanent.
+                </strong>
+
+                <p>
+                  {entryDeleteTarget.is_folder
+                    ? "The folder and everything inside it will be deleted from this computer and synchronized devices."
+                    : "The file will be deleted from this computer and synchronized devices."}
+                </p>
+              </div>
+
+              <div className="remove-path">
+                <span>
+                  Item location:
+                </span>
+
+                <strong>
+                  {entryDeleteTarget.path}
+                </strong>
+              </div>
+
+              {entryDeleteError && (
+                <div className="form-error">
+                  {entryDeleteError}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={
+                    closeEntryDeleteDialog
+                  }
+                  disabled={
+                    entryDeleteLoading
+                  }
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="danger-button"
+                  type="button"
+                  onClick={() => {
+                    void deleteBrowserEntry();
+                  }}
+                  disabled={
+                    entryDeleteLoading
+                  }
+                >
+                  {entryDeleteLoading
+                    ? "Deleting..."
+                    : "Delete permanently"}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
       {isInnerFolderOpen &&
         selectedFolder && (
           <div
@@ -2326,7 +2832,6 @@ function App() {
               <div className="modal-header">
                 <div>
                   <p>NEW FOLDER</p>
-
                   <h2>
                     Create a folder
                   </h2>
@@ -2361,12 +2866,9 @@ function App() {
                     value={
                       innerFolderName
                     }
-                    onChange={(
-                      event,
-                    ) => {
+                    onChange={(event) => {
                       setInnerFolderName(
-                        event.target
-                          .value,
+                        event.target.value,
                       );
                     }}
                     autoFocus
@@ -2747,7 +3249,9 @@ function App() {
                 <button
                   className="danger-button"
                   type="button"
-                  onClick={removeFolder}
+                  onClick={() => {
+                    void removeFolder();
+                  }}
                   disabled={
                     removeLoading
                   }
