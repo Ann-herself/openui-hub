@@ -8,7 +8,7 @@ import {
 } from "react";
 import "./App.css";
 
-type Page = "files" | "devices";
+type Page = "files" | "folders" | "devices" | "activity" | "settings";
 type FolderType = "sendreceive" | "sendonly" | "receiveonly";
 type FolderAction = "open" | "scan";
 
@@ -84,15 +84,41 @@ type LocalDevice = {
   message: string;
 };
 
+type ActivityEvent = {
+  id: number;
+  type: string;
+  time: string;
+  data?: Record<string, unknown>;
+};
+
+type FolderErrorEntry = {
+  error: string;
+  time: string;
+};
+
+type ActivityData = {
+  events: ActivityEvent[];
+  errors: Record<string, FolderErrorEntry[]>;
+};
+
+type SettingsData = {
+  app_version: string;
+  syncthing_url: string;
+  allowed_root: string;
+  syncthing: {
+    version: string;
+    operating_system: string;
+    architecture: string;
+    device_id: string;
+  };
+  folders_count: number;
+  devices_count: number;
+};
+
 type DirectoryUploadFile = File & {
   webkitRelativePath?: string;
 };
 
-type ApiData = {
-  detail?: unknown;
-  message?: unknown;
-  [key: string]: unknown;
-};
 
 type ModalShellProps = {
   eyebrow: string;
@@ -102,35 +128,377 @@ type ModalShellProps = {
   wide?: boolean;
 };
 
-const API_URL = (
-  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
-).replace(/\/+$/, "");
+const API_URL = import.meta.env.DEV
+  ? (
+      import.meta.env.VITE_API_URL ||
+      "http://127.0.0.1:8765"
+    ).replace(/\/+$/, "")
+  : "";
 
-async function readJson(response: Response): Promise<ApiData> {
-  return response.json().catch(() => ({} as ApiData));
+const APP_AUTHOR = "Ann Miqdad";
+const APP_REPOSITORY = "https://github.com/Ann-herself/openui-hub";
+
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function responseMessage(data: ApiData, fallback: string): string {
-  if (typeof data.detail === "string" && data.detail.trim()) {
-    return data.detail;
+function firstValue(record: UnknownRecord, keys: string[]): unknown {
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null) {
+      return record[key];
+    }
   }
-  if (typeof data.message === "string" && data.message.trim()) {
-    return data.message;
+  return undefined;
+}
+
+function asString(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
   }
   return fallback;
 }
 
-async function apiRequest<T>(
+function asNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function asBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on", "connected"].includes(normalized)) return true;
+    if (["false", "0", "no", "off", "disconnected"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => asString(item).trim())
+    .filter(Boolean);
+}
+
+function asCount(value: unknown, fallback = 0): number {
+  if (Array.isArray(value)) return value.length;
+  if (isRecord(value)) return Object.keys(value).length;
+  return asNumber(value, fallback);
+}
+
+function normalizeStatus(value: unknown): SyncthingStatus {
+  const data = isRecord(value) ? value : {};
+  return {
+    connected: asBoolean(firstValue(data, ["connected", "online", "is_connected"])),
+    device_id: asString(firstValue(data, ["device_id", "deviceId", "deviceID", "myID"])),
+    uptime_seconds: asNumber(firstValue(data, ["uptime_seconds", "uptime", "uptimeSeconds"])),
+    memory_bytes: asNumber(firstValue(data, ["memory_bytes", "memory", "memoryBytes"])),
+    syncthing_version: asString(firstValue(data, ["syncthing_version", "version", "client_version"])),
+    operating_system: asString(firstValue(data, ["operating_system", "os", "platform"])),
+    architecture: asString(firstValue(data, ["architecture", "arch"])),
+  };
+}
+
+function normalizeFolder(value: unknown): SyncthingFolder | null {
+  if (!isRecord(value)) return null;
+  const id = asString(firstValue(value, ["id", "folder_id", "folderID"])).trim();
+  if (!id) return null;
+
+  return {
+    id,
+    label: asString(firstValue(value, ["label", "name"]), id),
+    path: asString(firstValue(value, ["path", "root_path", "filesystem_path"])),
+    type: asString(firstValue(value, ["type", "folder_type"]), "sendreceive"),
+    paused: asBoolean(value.paused),
+    device_count: asNumber(firstValue(value, ["device_count", "devices_count", "deviceCount"])),
+  };
+}
+
+function normalizeFolders(value: unknown): SyncthingFolder[] {
+  const source = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.folders)
+      ? value.folders
+      : [];
+
+  return source
+    .map(normalizeFolder)
+    .filter((folder): folder is SyncthingFolder => folder !== null);
+}
+
+function normalizeBrowserEntry(value: unknown): BrowserEntry | null {
+  if (!isRecord(value)) return null;
+
+  const name = asString(firstValue(value, ["name", "label"])).trim();
+  const path = asString(firstValue(value, ["path", "relative_path"])).trim();
+  if (!name && !path) return null;
+
+  const rawType = asString(value.type).toLowerCase();
+  const isFolder = asBoolean(firstValue(value, ["is_folder", "isFolder"]), rawType === "folder");
+  const type: "folder" | "file" = isFolder ? "folder" : "file";
+
+  return {
+    name: name || path.split(/[\\/]/).filter(Boolean).pop() || path,
+    path,
+    type,
+    is_folder: isFolder,
+    size_bytes: isFolder ? null : asNumber(firstValue(value, ["size_bytes", "size", "sizeBytes"])),
+    extension: asString(value.extension),
+    modified_at: asString(firstValue(value, ["modified_at", "modified", "modifiedAt"])),
+  };
+}
+
+function normalizeBreadcrumb(value: unknown): BrowserBreadcrumb | null {
+  if (!isRecord(value)) return null;
+  const label = asString(firstValue(value, ["label", "name"])).trim();
+  const path = asString(value.path);
+  if (!label && !path) return null;
+  return { label: label || "Home", path };
+}
+
+function normalizeBrowserResponse(
+  value: unknown,
+  fallbackFolder: SyncthingFolder,
+): BrowserResponse {
+  const data = isRecord(value) ? value : {};
+  const folderData = isRecord(data.folder) ? data.folder : {};
+  const rawEntries = Array.isArray(data.entries)
+    ? data.entries
+    : Array.isArray(data.files)
+      ? data.files
+      : [];
+  const entries = rawEntries
+    .map(normalizeBrowserEntry)
+    .filter((entry): entry is BrowserEntry => entry !== null);
+  const breadcrumbs = Array.isArray(data.breadcrumbs)
+    ? data.breadcrumbs
+        .map(normalizeBreadcrumb)
+        .filter((breadcrumb): breadcrumb is BrowserBreadcrumb => breadcrumb !== null)
+    : [];
+
+  return {
+    folder: {
+      id: asString(firstValue(folderData, ["id", "folder_id"]), fallbackFolder.id),
+      label: asString(firstValue(folderData, ["label", "name"]), fallbackFolder.label),
+      root_path: asString(firstValue(folderData, ["root_path", "path"]), fallbackFolder.path),
+    },
+    current_path: asString(firstValue(data, ["current_path", "path"])),
+    breadcrumbs: breadcrumbs.length
+      ? breadcrumbs
+      : [{ label: fallbackFolder.label, path: "" }],
+    entries,
+    entry_count: asNumber(firstValue(data, ["entry_count", "count"]), entries.length),
+  };
+}
+
+function normalizeDevice(value: unknown): SyncthingDevice | null {
+  if (!isRecord(value)) return null;
+
+  const id = asString(firstValue(value, ["id", "device_id", "deviceID"])).trim();
+  if (!id) return null;
+
+  return {
+    id,
+    name: asString(firstValue(value, ["name", "label"]), "Unnamed device"),
+    short_id: asString(firstValue(value, ["short_id", "shortId"]), id.slice(0, 7)),
+    addresses: asStringArray(value.addresses),
+    connected: asBoolean(value.connected),
+    paused: asBoolean(value.paused),
+    connection_address: asString(firstValue(value, ["connection_address", "address"])),
+    connection_type: asString(firstValue(value, ["connection_type", "type"])),
+    client_version: asString(firstValue(value, ["client_version", "version"])),
+    is_local_network: asBoolean(firstValue(value, ["is_local_network", "local_network"])),
+    in_bytes_total: asNumber(firstValue(value, ["in_bytes_total", "received_bytes", "inBytesTotal"])),
+    out_bytes_total: asNumber(firstValue(value, ["out_bytes_total", "sent_bytes", "outBytesTotal"])),
+    connected_since: asString(firstValue(value, ["connected_since", "connectedSince"])),
+    last_seen: asString(firstValue(value, ["last_seen", "lastSeen"])),
+    introducer: asBoolean(value.introducer),
+    auto_accept_folders: asBoolean(firstValue(value, ["auto_accept_folders", "autoAcceptFolders"])),
+    compression: asString(value.compression, "metadata"),
+  };
+}
+
+function normalizeDevices(value: unknown): SyncthingDevice[] {
+  const source = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.devices)
+      ? value.devices
+      : [];
+
+  return source
+    .map(normalizeDevice)
+    .filter((device): device is SyncthingDevice => device !== null);
+}
+
+function normalizeLocalDevice(value: unknown): LocalDevice {
+  if (typeof value === "string") {
+    return {
+      id: value,
+      short_id: value.slice(0, 7),
+      message: "",
+    };
+  }
+
+  const data = isRecord(value) ? value : {};
+  const id = asString(firstValue(data, ["id", "device_id", "deviceID"]));
+  return {
+    id,
+    short_id: asString(firstValue(data, ["short_id", "shortId"]), id.slice(0, 7)),
+    message: asString(data.message),
+  };
+}
+
+function normalizeActivityEvent(value: unknown, index: number): ActivityEvent | null {
+  if (!isRecord(value)) return null;
+  const type = asString(firstValue(value, ["type", "event_type", "eventType"]), "Event");
+  const rawData = isRecord(value.data) ? value.data : {};
+  return {
+    id: asNumber(value.id, index + 1),
+    type,
+    time: asString(firstValue(value, ["time", "timestamp", "created_at"])),
+    data: rawData,
+  };
+}
+
+function normalizeFolderErrors(value: unknown): Record<string, FolderErrorEntry[]> {
+  if (!isRecord(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value).map(([folderId, rawEntries]) => {
+      const entries = Array.isArray(rawEntries)
+        ? rawEntries
+            .map((entry): FolderErrorEntry | null => {
+              if (typeof entry === "string") {
+                return { error: entry, time: "" };
+              }
+              if (!isRecord(entry)) return null;
+              return {
+                error: asString(firstValue(entry, ["error", "message"]), "Unknown folder error"),
+                time: asString(firstValue(entry, ["time", "timestamp"])),
+              };
+            })
+            .filter((entry): entry is FolderErrorEntry => entry !== null)
+        : [];
+
+      return [folderId, entries];
+    }),
+  );
+}
+
+function normalizeActivityData(value: unknown): ActivityData {
+  const data = isRecord(value) ? value : {};
+  const rawEvents = Array.isArray(value)
+    ? value
+    : Array.isArray(data.events)
+      ? data.events
+      : Array.isArray(data.activity)
+        ? data.activity
+        : [];
+
+  return {
+    events: rawEvents
+      .map(normalizeActivityEvent)
+      .filter((event): event is ActivityEvent => event !== null),
+    errors: normalizeFolderErrors(firstValue(data, ["errors", "folder_errors", "folderErrors"])),
+  };
+}
+
+function normalizeSettings(value: unknown): SettingsData {
+  const data = isRecord(value) ? value : {};
+  const syncthingData = isRecord(data.syncthing) ? data.syncthing : data;
+
+  return {
+    app_version: asString(firstValue(data, ["app_version", "version"]), "Unknown"),
+    syncthing_url: asString(firstValue(data, ["syncthing_url", "api_url", "url"]), "Unavailable"),
+    allowed_root: asString(firstValue(data, ["allowed_root", "storage_root", "root"]), "Not configured"),
+    syncthing: {
+      version: asString(firstValue(syncthingData, ["version", "syncthing_version"]), "Unavailable"),
+      operating_system: asString(firstValue(syncthingData, ["operating_system", "os", "platform"]), "Unknown"),
+      architecture: asString(firstValue(syncthingData, ["architecture", "arch"]), "Unknown"),
+      device_id: asString(firstValue(syncthingData, ["device_id", "deviceId", "deviceID", "myID"])),
+    },
+    folders_count: asCount(firstValue(data, ["folders_count", "folder_count", "folders"])),
+    devices_count: asCount(firstValue(data, ["devices_count", "device_count", "devices"])),
+  };
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text.trim()) return {};
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { detail: text };
+  }
+}
+
+function responseMessage(data: unknown, fallback: string): string {
+  if (!isRecord(data)) return fallback;
+
+  const detail = firstValue(data, ["detail", "message", "error"]);
+  if (typeof detail === "string" && detail.trim()) {
+    return detail;
+  }
+
+  return fallback;
+}
+
+async function apiRequest<T = unknown>(
   path: string,
   init?: RequestInit,
   fallback = "The request failed.",
 ): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, init);
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/json");
+  }
+
+  const response = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers,
+  });
   const data = await readJson(response);
+
   if (!response.ok) {
     throw new Error(responseMessage(data, fallback));
   }
-  return data as unknown as T;
+
+  return data as T;
+}
+
+async function copyText(value: string): Promise<void> {
+  if (!value.trim()) {
+    throw new Error("There is no value to copy.");
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error("Copying is not available in this browser.");
+  }
 }
 
 function formatBytes(value: number | null | undefined): string {
@@ -164,6 +532,64 @@ function previewType(entry: BrowserEntry): "image" | "pdf" | "unsupported" {
     return "image";
   }
   return extension === ".pdf" ? "pdf" : "unsupported";
+}
+
+function eventMeta(type: string): { icon: string; label: string } {
+  switch (type) {
+    case "Starting":
+      return { icon: "↻", label: "Syncthing starting" };
+    case "StartupComplete":
+      return { icon: "▶", label: "Syncthing started" };
+    case "DeviceConnected":
+      return { icon: "⇄", label: "Device connected" };
+    case "DeviceDisconnected":
+      return { icon: "⇄", label: "Device disconnected" };
+    case "DevicePaused":
+      return { icon: "Ⅱ", label: "Device paused" };
+    case "DeviceResumed":
+      return { icon: "▶", label: "Device resumed" };
+    case "FolderCompletion":
+      return { icon: "✓", label: "Sync completed" };
+    case "FolderSummary":
+      return { icon: "▣", label: "Folder updated" };
+    case "FolderErrors":
+      return { icon: "!", label: "Folder errors" };
+    case "FolderPaused":
+      return { icon: "Ⅱ", label: "Folder paused" };
+    case "FolderResumed":
+      return { icon: "▶", label: "Folder resumed" };
+    case "FolderScanProgress":
+      return { icon: "↻", label: "Scanning folder" };
+    case "FolderSyncProgress":
+      return { icon: "⇄", label: "Syncing folder" };
+    case "ItemStarted":
+      return { icon: "↓", label: "Download started" };
+    case "ItemFinished":
+      return { icon: "✓", label: "File synced" };
+    case "LocalChangeDetected":
+      return { icon: "✎", label: "Local change detected" };
+    case "RemoteChangeDetected":
+      return { icon: "⇄", label: "Remote change detected" };
+    case "StateChanged":
+      return { icon: "⇄", label: "State changed" };
+    case "ConfigSaved":
+      return { icon: "⚙", label: "Configuration saved" };
+    case "DownloadProgress":
+      return { icon: "↓", label: "Download progress" };
+    default:
+      return { icon: "•", label: type || "Event" };
+  }
+}
+
+function eventDetail(event: ActivityEvent): string {
+  const data = event.data ?? {};
+  const folder = typeof data.folder === "string" ? data.folder : undefined;
+  const item = typeof data.item === "string" ? data.item : undefined;
+  const device = typeof data.device === "string" ? data.device : undefined;
+  const parts = [folder, item, device].filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+  return parts.join(" · ");
 }
 
 function buildFileUrl(
@@ -229,6 +655,14 @@ function App() {
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState("");
 
+  const [activity, setActivity] = useState<ActivityData | null>(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState("");
+
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+
   const [isNewMenuOpen, setIsNewMenuOpen] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const folderUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -284,14 +718,30 @@ function App() {
     try {
       setLoading(true);
       setError("");
+
       const [statusData, foldersData] = await Promise.all([
-        apiRequest<SyncthingStatus>("/api/syncthing/status", undefined, "Could not load Syncthing status."),
-        apiRequest<SyncthingFolder[]>("/api/syncthing/folders", undefined, "Could not load folders."),
+        apiRequest<unknown>(
+          "/api/syncthing/status",
+          undefined,
+          "Could not load Syncthing status.",
+        ),
+        apiRequest<unknown>(
+          "/api/syncthing/folders",
+          undefined,
+          "Could not load folders.",
+        ),
       ]);
-      setStatus(statusData);
-      setFolders(foldersData);
+
+      setStatus(normalizeStatus(statusData));
+      setFolders(normalizeFolders(foldersData));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not load OpenUI.");
+      setStatus(null);
+      setFolders([]);
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not load OpenUI Hub.",
+      );
     } finally {
       setLoading(false);
     }
@@ -305,15 +755,25 @@ function App() {
       setActiveMenu(null);
       setIsNewMenuOpen(false);
       setPreviewEntry(null);
-      const query = path ? `?${new URLSearchParams({ path }).toString()}` : "";
-      const data = await apiRequest<BrowserResponse>(
+
+      const query = path
+        ? `?${new URLSearchParams({ path }).toString()}`
+        : "";
+
+      const data = await apiRequest<unknown>(
         `/api/syncthing/folders/${encodeURIComponent(folder.id)}/files${query}`,
         undefined,
         "Could not load the folder contents.",
       );
-      setBrowserData(data);
+
+      setBrowserData(normalizeBrowserResponse(data, folder));
     } catch (requestError) {
-      setBrowserError(requestError instanceof Error ? requestError.message : "Could not load the folder contents.");
+      setBrowserData(null);
+      setBrowserError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not load the folder contents.",
+      );
     } finally {
       setBrowserLoading(false);
     }
@@ -323,16 +783,80 @@ function App() {
     try {
       setDevicesLoading(true);
       setDevicesError("");
+
       const [deviceData, localData] = await Promise.all([
-        apiRequest<SyncthingDevice[]>("/api/syncthing/devices", undefined, "Could not load devices."),
-        apiRequest<LocalDevice>("/api/syncthing/devices/local", undefined, "Could not load the local device ID."),
+        apiRequest<unknown>(
+          "/api/syncthing/devices",
+          undefined,
+          "Could not load devices.",
+        ),
+        apiRequest<unknown>(
+          "/api/syncthing/devices/local",
+          undefined,
+          "Could not load the local Device ID.",
+        ),
       ]);
-      setDevices(deviceData);
-      setLocalDevice(localData);
+
+      setDevices(normalizeDevices(deviceData));
+      setLocalDevice(normalizeLocalDevice(localData));
     } catch (requestError) {
-      setDevicesError(requestError instanceof Error ? requestError.message : "Could not load devices.");
+      setDevices([]);
+      setLocalDevice(null);
+      setDevicesError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not load devices.",
+      );
     } finally {
       setDevicesLoading(false);
+    }
+  }
+
+  async function loadActivity() {
+    try {
+      setActivityLoading(true);
+      setActivityError("");
+
+      const activityData = await apiRequest<unknown>(
+        "/api/syncthing/activity",
+        undefined,
+        "Could not load activity.",
+      );
+
+      setActivity(normalizeActivityData(activityData));
+    } catch (requestError) {
+      setActivity(null);
+      setActivityError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not load activity.",
+      );
+    } finally {
+      setActivityLoading(false);
+    }
+  }
+
+  async function loadSettings() {
+    try {
+      setSettingsLoading(true);
+      setSettingsError("");
+
+      const settingsData = await apiRequest<unknown>(
+        "/api/settings",
+        undefined,
+        "Could not load settings.",
+      );
+
+      setSettings(normalizeSettings(settingsData));
+    } catch (requestError) {
+      setSettings(null);
+      setSettingsError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Could not load settings.",
+      );
+    } finally {
+      setSettingsLoading(false);
     }
   }
 
@@ -397,9 +921,26 @@ function App() {
     );
   }, [devices, search]);
 
+  const filteredActivityEvents = useMemo(() => {
+    const events = activity?.events ?? [];
+    const value = search.trim().toLowerCase();
+    if (!value) return events;
+    return events.filter((event) =>
+      `${event.type} ${eventDetail(event)}`.toLowerCase().includes(value),
+    );
+  }, [activity, search]);
+
   async function refreshCurrentView() {
     if (page === "devices") {
       await loadDevices();
+      return;
+    }
+    if (page === "activity") {
+      await loadActivity();
+      return;
+    }
+    if (page === "settings") {
+      await loadSettings();
       return;
     }
     if (selectedFolder) {
@@ -427,10 +968,40 @@ function App() {
     void loadDevices();
   }
 
+  function openSyncFoldersPage() {
+    setPage("folders");
+    setSelectedFolder(null);
+    setBrowserData(null);
+    setBrowserError("");
+    setSearch("");
+    setActiveMenu(null);
+  }
+
+  function openActivityPage() {
+    setPage("activity");
+    setSelectedFolder(null);
+    setBrowserData(null);
+    setSearch("");
+    setActiveMenu(null);
+    void loadActivity();
+  }
+
+  function openSettingsPage() {
+    setPage("settings");
+    setSelectedFolder(null);
+    setBrowserData(null);
+    setSearch("");
+    setActiveMenu(null);
+    void loadSettings();
+  }
+
   function handleNewButton() {
     if (page === "devices") {
       clearFormState();
       setAddDeviceOpen(true);
+      return;
+    }
+    if (page === "activity" || page === "settings") {
       return;
     }
     if (!selectedFolder) {
@@ -748,7 +1319,7 @@ function App() {
   async function copyLocalDeviceId() {
     if (!localDevice) return;
     try {
-      await navigator.clipboard.writeText(localDevice.id);
+      await copyText(localDevice.id);
       success("Local Device ID copied to the clipboard.");
     } catch {
       failure("Could not copy the Device ID. Select it and copy it manually.");
@@ -887,6 +1458,16 @@ function App() {
     ? buildFileUrl(selectedFolder.id, previewEntry.path, "download")
     : "";
 
+  const folderErrorCount = Object.values(activity?.errors ?? {}).reduce(
+    (total, entries) => total + entries.length,
+    0,
+  );
+
+  function folderName(folderId: string): string {
+    const match = folders.find((folder) => folder.id === folderId);
+    return match ? match.label : folderId;
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -898,17 +1479,18 @@ function App() {
           </div>
         </div>
 
-        <div className="new-menu-wrap" onClick={(event) => event.stopPropagation()}>
-          <button className="new-button" type="button" onClick={handleNewButton} disabled={isUploading}>
-            <span>＋</span>
-            {folderUploadLoading
-              ? `Uploading ${folderUploadProgress.current}/${folderUploadProgress.total}`
-              : uploadLoading
-                ? "Uploading..."
-                : page === "devices"
-                  ? "Add device"
-                  : "New"}
-          </button>
+        {page !== "activity" && page !== "settings" && (
+          <div className="new-menu-wrap" onClick={(event) => event.stopPropagation()}>
+            <button className="new-button" type="button" onClick={handleNewButton} disabled={isUploading}>
+              <span>＋</span>
+              {folderUploadLoading
+                ? `Uploading ${folderUploadProgress.current}/${folderUploadProgress.total}`
+                : uploadLoading
+                  ? "Uploading..."
+                  : page === "devices"
+                    ? "Add device"
+                    : "New"}
+            </button>
 
           {page === "files" && selectedFolder && isNewMenuOpen && (
             <div className="new-file-menu">
@@ -962,21 +1544,22 @@ function App() {
             }}
           />
         </div>
+        )}
 
         <nav className="navigation">
           <button className={`nav-item${page === "files" ? " active" : ""}`} type="button" onClick={openFilesPage}>
             <span className="nav-icon">▣</span> My Files
           </button>
-          <button className="nav-item" type="button" onClick={openFilesPage}>
+          <button className={`nav-item${page === "folders" ? " active" : ""}`} type="button" onClick={openSyncFoldersPage}>
             <span className="nav-icon">⇄</span> Sync Folders
           </button>
           <button className={`nav-item${page === "devices" ? " active" : ""}`} type="button" onClick={openDevicesPage}>
             <span className="nav-icon">◉</span> Devices
           </button>
-          <button className="nav-item" type="button">
+          <button className={`nav-item${page === "activity" ? " active" : ""}`} type="button" onClick={openActivityPage}>
             <span className="nav-icon">◷</span> Activity
           </button>
-          <button className="nav-item" type="button">
+          <button className={`nav-item${page === "settings" ? " active" : ""}`} type="button" onClick={openSettingsPage}>
             <span className="nav-icon">⚙</span> Settings
           </button>
         </nav>
@@ -992,19 +1575,35 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <label className="search-box">
-            <span>⌕</span>
-            <input
-              type="search"
-              placeholder={page === "devices" ? "Search devices" : selectedFolder ? "Search in this folder" : "Search in your files"}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
+          {page !== "settings" && (
+            <label className="search-box">
+              <span>⌕</span>
+              <input
+                type="search"
+                placeholder={
+                  page === "devices"
+                    ? "Search devices"
+                    : page === "activity"
+                      ? "Search activity"
+                      : selectedFolder
+                        ? "Search in this folder"
+                        : "Search in your files"
+                }
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </label>
+          )}
           <button className="refresh-button" type="button" onClick={() => void refreshCurrentView()} aria-label="Refresh" title="Refresh">
             ↻
           </button>
-          <div className="user-avatar">AM</div>
+          <div
+            className="user-avatar"
+            title={`${APP_AUTHOR} — Creator & Lead Developer`}
+            aria-label={`${APP_AUTHOR}, Creator and Lead Developer`}
+          >
+            AM
+          </div>
         </header>
 
         <section className="content">
@@ -1179,12 +1778,236 @@ function App() {
                 </div>
               )}
             </>
+          ) : page === "activity" ? (
+            <>
+              <div className="page-heading">
+                <div>
+                  <p className="page-eyebrow">OPENUI HUB</p>
+                  <h1>Activity</h1>
+                  <p>Recent Syncthing events and folder errors.</p>
+                </div>
+                {status?.connected && (
+                  <div className="connection-badge">
+                    <span className="connection-dot online" /> Syncthing connected
+                  </div>
+                )}
+              </div>
+
+              {activityLoading && <div className="state-card">Loading activity...</div>}
+              {activityError && (
+                <div className="state-card error-card">
+                  <strong>Could not load activity</strong>
+                  <p>{activityError}</p>
+                  <button type="button" onClick={() => void loadActivity()}>Try again</button>
+                </div>
+              )}
+
+              {!activityLoading && !activityError && !activity && (
+                <div className="state-card error-card">
+                  <strong>Activity is unavailable</strong>
+                  <p>The server returned an empty activity response.</p>
+                  <button type="button" onClick={() => void loadActivity()}>
+                    Try again
+                  </button>
+                </div>
+              )}
+
+              {!activityLoading && !activityError && activity && (
+                <>
+                  <div className="section-heading">
+                    <div>
+                      <h2>Recent Activity</h2>
+                      <span>{filteredActivityEvents.length} event{filteredActivityEvents.length === 1 ? "" : "s"}</span>
+                    </div>
+                  </div>
+
+                  {filteredActivityEvents.length ? (
+                    <div className="activity-list">
+                      {filteredActivityEvents.map((event) => {
+                        const meta = eventMeta(event.type);
+                        const detail = eventDetail(event);
+                        return (
+                          <article className="activity-item" key={event.id}>
+                            <div className="activity-icon">{meta.icon}</div>
+                            <div className="activity-text">
+                              <strong>{meta.label}</strong>
+                              {detail && <span>{detail}</span>}
+                            </div>
+                            <time className="activity-time">{formatDate(event.time)}</time>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <div className="empty-folder"><span /></div>
+                      <h2>No activity yet</h2>
+                      <p>Events will appear here as Syncthing syncs.</p>
+                    </div>
+                  )}
+
+                  <div className="section-heading">
+                    <div>
+                      <h2>Folder Errors</h2>
+                      <span>{folderErrorCount} error{folderErrorCount === 1 ? "" : "s"}</span>
+                    </div>
+                  </div>
+
+                  {folderErrorCount ? (
+                    <div className="activity-list">
+                      {Object.entries(activity?.errors ?? {}).flatMap(([folderId, entries]) =>
+                        entries.map((entry, index) => (
+                          <article className="activity-item error-item" key={`${folderId}-${index}`}>
+                            <div className="activity-icon">!</div>
+                            <div className="activity-text">
+                              <strong>{folderName(folderId)}</strong>
+                              <span>{entry.error}</span>
+                            </div>
+                            <time className="activity-time">{formatDate(entry.time)}</time>
+                          </article>
+                        )),
+                      )}
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <div className="empty-folder"><span /></div>
+                      <h2>No folder errors</h2>
+                      <p>All your sync folders are healthy.</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          ) : page === "settings" ? (
+            <>
+              <div className="page-heading">
+                <div>
+                  <p className="page-eyebrow">OPENUI HUB</p>
+                  <h1>Settings</h1>
+                  <p>Overview of OpenUI Hub and the connected Syncthing instance.</p>
+                </div>
+                {status?.connected && (
+                  <div className="connection-badge">
+                    <span className="connection-dot online" /> Syncthing connected
+                  </div>
+                )}
+              </div>
+
+              {settingsLoading && <div className="state-card">Loading settings...</div>}
+              {settingsError && (
+                <div className="state-card error-card">
+                  <strong>Could not load settings</strong>
+                  <p>{settingsError}</p>
+                  <button type="button" onClick={() => void loadSettings()}>Try again</button>
+                </div>
+              )}
+
+              {!settingsLoading && !settingsError && !settings && (
+                <div className="state-card error-card">
+                  <strong>Settings are unavailable</strong>
+                  <p>The server returned an empty settings response.</p>
+                  <button type="button" onClick={() => void loadSettings()}>
+                    Try again
+                  </button>
+                </div>
+              )}
+
+              {!settingsLoading && !settingsError && settings && (
+                <>
+                  <div className="settings-grid">
+                    <section className="settings-card">
+                      <h2>OpenUI Hub</h2>
+                      <div className="settings-row">
+                        <span>Version</span>
+                        <strong>{settings.app_version}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>Allowed storage root</span>
+                        <code>{settings.allowed_root}</code>
+                      </div>
+                    </section>
+
+                    <section className="settings-card">
+                      <h2>Syncthing</h2>
+                      <div className="settings-row">
+                        <span>Version</span>
+                        <strong>{settings.syncthing.version}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>System</span>
+                        <strong>{settings.syncthing.operating_system} · {settings.syncthing.architecture}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>API</span>
+                        <strong>{settings.syncthing_url}</strong>
+                      </div>
+                    </section>
+
+                    <section className="settings-card">
+                      <h2>Counts</h2>
+                      <div className="settings-row">
+                        <span>Sync folders</span>
+                        <strong>{settings.folders_count}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>Devices</span>
+                        <strong>{settings.devices_count}</strong>
+                      </div>
+                    </section>
+
+                    <section className="settings-card">
+                      <h2>About</h2>
+                      <div className="settings-row">
+                        <span>Created by</span>
+                        <strong>{APP_AUTHOR}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>Role</span>
+                        <strong>Creator &amp; Lead Developer</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>Repository</span>
+                        <a href={APP_REPOSITORY} target="_blank" rel="noreferrer">
+                          GitHub
+                        </a>
+                      </div>
+                    </section>
+                  </div>
+
+                  {settings.syncthing.device_id && (
+                    <section className="settings-card device-card">
+                      <h2>This Device ID</h2>
+                      <div className="device-id-box">
+                        <code>{settings.syncthing.device_id}</code>
+                        <button
+                          className="copy-device-button"
+                          type="button"
+                          onClick={() => {
+                            void copyText(settings.syncthing.device_id)
+                              .then(() => success("Device ID copied."))
+                              .catch((copyError: unknown) => {
+                                failure(
+                                  copyError instanceof Error
+                                    ? copyError.message
+                                    : "Could not copy the Device ID.",
+                                );
+                              });
+                          }}
+                        >
+                          Copy ID
+                        </button>
+                      </div>
+                    </section>
+                  )}
+                </>
+              )}
+            </>
           ) : (
             <>
               <div className="page-heading">
                 <div>
                   <p className="page-eyebrow">OPENUI HUB</p>
-                  <h1>{selectedFolder ? selectedFolder.label : "My Files"}</h1>
+                  <h1>{selectedFolder ? selectedFolder.label : page === "folders" ? "Sync Folders" : "My Files"}</h1>
                   <p>{selectedFolder ? "Browse files stored in this sync folder." : "Your Syncthing folders in one simple place."}</p>
                 </div>
                 {status?.connected && (
@@ -1397,7 +2220,15 @@ function App() {
         </section>
       </main>
 
-      {notice && <div className={`app-notice${notice.startsWith("Error:") ? " error" : ""}`}>{notice}</div>}
+      {notice && (
+        <div
+          className={`app-notice${notice.startsWith("Error:") ? " error" : ""}`}
+          role={notice.startsWith("Error:") ? "alert" : "status"}
+          aria-live="polite"
+        >
+          {notice}
+        </div>
+      )}
 
       {previewEntry && selectedFolder && (
         <div className="file-preview-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setPreviewEntry(null)}>
@@ -1430,7 +2261,7 @@ function App() {
         <ModalShell eyebrow="NEW SYNC FOLDER" title="Create a sync folder" onClose={() => !formLoading && setCreateFolderOpen(false)}>
           <form className="create-form" onSubmit={createSyncFolder}>
             <label className="form-field"><span>Folder name</span><input value={folderLabel} onChange={(event) => setFolderLabel(event.target.value)} placeholder="Example: Projects" autoFocus /></label>
-            <label className="form-field"><span>Location on this computer</span><input value={folderPath} onChange={(event) => setFolderPath(event.target.value)} placeholder="C:/Users/admin/Projects" /></label>
+            <label className="form-field"><span>Location on this computer</span><input value={folderPath} onChange={(event) => setFolderPath(event.target.value)} placeholder="C:/Users/YourName/Projects" /></label>
             <label className="form-field"><span>Sync mode</span><select value={folderType} onChange={(event) => setFolderType(event.target.value as FolderType)}><option value="sendreceive">Keep files synchronized everywhere</option><option value="sendonly">Send from this device only</option><option value="receiveonly">Receive on this device only</option></select></label>
             {formError && <div className="form-error">{formError}</div>}
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setCreateFolderOpen(false)} disabled={formLoading}>Cancel</button><button className="primary-button" type="submit" disabled={formLoading}>{formLoading ? "Creating..." : "Create folder"}</button></div>

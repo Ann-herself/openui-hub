@@ -1,0 +1,15 @@
+OpenUI Hub — Third-Party Notices
+
+OpenUI Hub integrates with and may distribute Syncthing.
+
+Syncthing
+Copyright: The Syncthing Authors and contributors
+Project: https://github.com/syncthing/syncthing
+License: Mozilla Public License 2.0 (MPL-2.0)
+
+When distributing a bundled Syncthing executable, include the applicable
+Syncthing license text and preserve its copyright and license notices.
+
+OpenUI Hub also uses open-source packages from the Python and JavaScript
+ecosystems. Their licenses remain available through their package metadata,
+lock files, and upstream projects.
