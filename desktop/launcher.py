@@ -21,6 +21,23 @@ import uvicorn
 from dotenv import dotenv_values
 
 
+# PyInstaller windowed applications may not provide stdout/stderr.
+if sys.stdout is None:
+    sys.stdout = open(
+        os.devnull,
+        "w",
+        encoding="utf-8",
+    )
+
+if sys.stderr is None:
+    sys.stderr = open(
+        os.devnull,
+        "w",
+        encoding="utf-8",
+    )
+
+
+
 APP_NAME = "OpenUI Hub"
 APP_HOST = "127.0.0.1"
 APP_PORT_START = 8765
@@ -611,7 +628,7 @@ def main() -> int:
             app,
             host=APP_HOST,
             port=app_port,
-            log_level="info",
+            log_config=None,
             access_log=False,
         )
 
