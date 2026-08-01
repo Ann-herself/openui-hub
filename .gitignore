@@ -7,3 +7,9 @@ frontend/dist/
 
 .DS_Store
 Thumbs.db
+*.py[cod]
+.pytest_cache/
+build/
+release-dist/
+installer/Output/
+vendor/syncthing/syncthing.exe
