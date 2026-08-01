@@ -1,21 +1,16 @@
 <div align="center">
 
-<img src="frontend/public/icons.svg" alt="OpenUI Hub logo" width="96">
-
 # OpenUI Hub
 
-### A simple desktop interface for managing self-hosted Syncthing files, folders, and devices.
+### Self-hosted file synchronization, simplified for Windows.
 
-[![Latest Release](https://img.shields.io/github/v/release/Ann-herself/openui-hub?display_name=tag&style=for-the-badge)](https://github.com/Ann-herself/openui-hub/releases/latest)
-[![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=for-the-badge&logo=windows)](https://github.com/Ann-herself/openui-hub/releases/latest)
-[![Python](https://img.shields.io/badge/Python-FastAPI-3776AB?style=for-the-badge&logo=python&logoColor=white)](backend)
-[![React](https://img.shields.io/badge/React-Vite-61DAFB?style=for-the-badge&logo=react&logoColor=black)](frontend)
+[![Latest Release](https://img.shields.io/github/v/release/Ann-herself/openui-hub?style=for-the-badge)](https://github.com/Ann-herself/openui-hub/releases/latest)
+[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?style=for-the-badge&logo=windows)](https://github.com/Ann-herself/openui-hub/releases/latest)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 **Designed and developed by [Ann Miqdad](https://github.com/Ann-herself)**
 
-[Download for Windows](https://github.com/Ann-herself/openui-hub/releases/latest) ·
-[Report an Issue](https://github.com/Ann-herself/openui-hub/issues) ·
-[View Source](https://github.com/Ann-herself/openui-hub)
+[Download for Windows](https://github.com/Ann-herself/openui-hub/releases/latest) · [Report an issue](https://github.com/Ann-herself/openui-hub/issues)
 
 </div>
 
@@ -23,73 +18,60 @@
 
 ## Overview
 
-OpenUI Hub provides a unified, user-friendly interface for self-hosted file synchronization.  
-The current Windows release integrates with **Syncthing** and brings file, folder, and device management into one clean dashboard.
+OpenUI Hub is a Windows desktop application that provides a clean interface for managing self-hosted Syncthing files, folders, and devices.
 
-The application packages the frontend, backend, launcher, and Syncthing runtime into a Windows installer, so end users do not need to install Python, Node.js, or development tools.
+The distributed Windows package includes the React frontend, FastAPI backend, desktop launcher, and Syncthing runtime. End users do not need to install Python, Node.js, or development tools.
 
-## Highlights
+## Features
 
-- Browse Syncthing folders and files from one interface.
-- Upload, download, rename, and delete files.
-- Create and manage folders.
-- View local and remote Syncthing devices.
+- Browse Syncthing folders and their contents.
+- Upload and download files.
+- Create, rename, and permanently delete files or folders.
+- Create, pause, resume, rename, scan, open, and remove sync folders.
+- View, add, edit, pause, resume, and remove remote devices.
 - Copy the local Syncthing Device ID.
-- Manage the application through a packaged Windows launcher.
-- Run locally as a self-hosted application.
-- Install through a standard Windows setup file.
-- Use a portable Windows package without installation.
+- Review recent activity and folder errors.
+- View application, storage, version, and Syncthing settings.
+- Install through a standard Windows installer or use a portable package.
+- Keep application data in the current Windows user's local application directory.
 
-> **Development status:** Core file, folder, and device workflows are available.  
-> Activity and Settings interfaces are currently preview features and may receive further functional improvements.
+## Download and Install
 
-## Download
-
-### Recommended: Windows Installer
+### Windows Installer — Recommended
 
 1. Open the [latest release](https://github.com/Ann-herself/openui-hub/releases/latest).
-2. Download `OpenUI-Hub-Setup-v1.0.2.exe`.
-3. Run the installer.
-4. Launch **OpenUI Hub** from the Start Menu.
+2. Download `OpenUI-Hub-Setup-v1.0.3.exe`.
+3. Close any previous OpenUI Hub or bundled Syncthing process.
+4. Run the installer.
+5. Launch **OpenUI Hub** from the Windows Start Menu.
 
-### Portable Version
+### Portable Package
 
-Download `OpenUI-Hub-Portable-v1.0.2.zip`, extract it, then run:
-
-```text
-OpenUIHub\OpenUIHub.exe
-```
-
-The portable package is intended for users who prefer not to install the application.
+1. Download `OpenUI-Hub-Portable-v1.0.3.zip` from the latest release.
+2. Extract the archive.
+3. Run `OpenUIHub\OpenUIHub.exe`.
 
 ## System Requirements
 
 - Windows 10 or Windows 11, 64-bit
-- A local user account with permission to install or run desktop applications
+- Permission to run desktop applications
 - Network access when connecting additional Syncthing devices
 
-## First Run
+## How It Works
 
-OpenUI Hub starts a local application service and opens the interface in your browser at:
+OpenUI Hub runs locally and opens its interface in the default browser. The default application address is:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-Application data and diagnostic logs are stored under:
+Runtime configuration, logs, and the isolated Syncthing home are stored under:
 
 ```text
 %LOCALAPPDATA%\OpenUIHub
 ```
 
-## Screenshots
-
-Add current screenshots to `docs/images/`, then enable this section:
-
-```markdown
-![OpenUI Hub dashboard](docs/images/dashboard.png)
-![Device management](docs/images/devices.png)
-```
+Synced files remain in folders selected by the user.
 
 ## Technology Stack
 
@@ -99,40 +81,42 @@ Add current screenshots to `docs/images/`, then enable this section:
 | Backend | Python, FastAPI, Uvicorn |
 | Synchronization | Syncthing |
 | Windows packaging | PyInstaller, Inno Setup |
-| Local interface | Browser-based UI served by the packaged application |
+| Desktop experience | Local browser interface managed by a Windows launcher |
 
 ## Project Structure
 
 ```text
 openui-hub/
-├── backend/             # FastAPI backend and Syncthing integration
-├── desktop/             # Windows application launcher
-├── frontend/            # React and TypeScript frontend
-├── installer/           # Inno Setup installer configuration
-├── scripts/             # Windows build and packaging scripts
-├── licenses/            # Third-party license notices
-├── vendor/              # Bundled runtime components
+├── backend/             # FastAPI API and application version
+├── desktop/             # Windows launcher
+├── frontend/            # React and TypeScript interface
+├── installer/           # Inno Setup configuration
+├── scripts/             # Build and release scripts
+├── vendor/              # Local build-time third-party runtime files
+├── licenses/            # Third-party license texts
+├── AUTHORS.md
+├── LICENSE
 ├── README.md
 └── THIRD_PARTY_NOTICES.txt
 ```
 
 ## Development Setup
 
-### Prerequisites
+### Requirements
 
 - Python 3.11 or newer
-- Node.js and npm
-- Git
+- Node.js 20 or newer
+- npm
 - Syncthing
 
-### Clone the Repository
+### Clone
 
 ```powershell
 git clone https://github.com/Ann-herself/openui-hub.git
 cd openui-hub
 ```
 
-### Backend
+### Backend Environment
 
 ```powershell
 python -m venv backend\.venv
@@ -140,87 +124,67 @@ python -m venv backend\.venv
 pip install -r backend\requirements.txt
 ```
 
+Create `backend/.env` for development only. Never commit API keys or `.env` files.
+
 ### Frontend
 
 ```powershell
 cd frontend
-npm install
-npm run dev
+npm ci
+npm run build
+cd ..
 ```
 
-### Run the Packaged-Style Launcher
-
-From the repository root:
+### Run from Source
 
 ```powershell
 .\backend\.venv\Scripts\python.exe .\desktop\launcher.py
 ```
 
-## Build for Windows
+## Build the Windows Release
 
-Build the Windows application package:
+Place the Windows Syncthing executable at:
+
+```text
+vendor\syncthing\syncthing.exe
+```
+
+Then run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-.\scripts\build-windows.ps1 -Version 1.0.2
+.\scripts\build-windows.ps1 -Version 1.0.3
+.\scripts\build-installer.ps1 -Version 1.0.3
 ```
 
-Build the installer:
-
-```powershell
-.\scripts\build-installer.ps1 -Version 1.0.2
-```
-
-Generated release files are placed in:
+Expected release assets:
 
 ```text
-release-dist/
+release-dist\OpenUI-Hub-Setup-v1.0.3.exe
+release-dist\OpenUI-Hub-Portable-v1.0.3.zip
+release-dist\SHA256SUMS.txt
 ```
-
-## Roadmap
-
-- Complete Activity actions and filtering.
-- Expand Settings controls.
-- Improve update and upgrade handling.
-- Add additional self-hosted integrations.
-- Improve mobile and responsive access.
-- Add automated release builds and tests.
 
 ## Security and Privacy
 
-OpenUI Hub is designed to run locally. Do not commit `.env` files, credentials, API keys, Syncthing API keys, private certificates, or user data to GitHub.
+- OpenUI Hub binds its local interface to `127.0.0.1`.
+- Syncthing credentials and runtime settings are stored locally and are not committed to the repository.
+- File operations are restricted to configured synchronization folders.
+- The application blocks directory traversal and protects Syncthing system entries.
 
-To report a security issue, contact the maintainer privately rather than opening a public issue.
+Do not report security-sensitive information in a public issue.
 
-## Third-Party Components
+## Third-Party Software
 
-OpenUI Hub integrates and bundles third-party open-source software. See:
-
-- [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt)
-- [`licenses/`](licenses/)
-
-Syncthing remains the property of its respective authors and contributors.
+OpenUI Hub integrates with Syncthing, which is licensed separately under MPL-2.0. See `THIRD_PARTY_NOTICES.txt` and the `licenses/` directory.
 
 ## Author
 
 **Ann Miqdad**  
-Creator, designer, and primary developer of OpenUI Hub.
+Original creator and lead developer of OpenUI Hub.
 
-- GitHub: [@Ann-herself](https://github.com/Ann-herself)
-- Project repository: [Ann-herself/openui-hub](https://github.com/Ann-herself/openui-hub)
-
-## Contributing
-
-Issues and suggestions are welcome. Before submitting a pull request, open an issue describing the proposed change and its purpose.
+GitHub: [@Ann-herself](https://github.com/Ann-herself)
 
 ## License
 
-No project license is declared in this repository yet. All rights remain with the copyright holder unless a license file is added.
-
----
-
-<div align="center">
-
-**OpenUI Hub — developed by Ann Miqdad**
-
-</div>
+OpenUI Hub is available under the [MIT License](LICENSE).

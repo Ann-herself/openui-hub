@@ -1,15 +1,53 @@
-backend/.venv/
-backend/__pycache__/
+# Secrets and local configuration
 backend/.env
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+!.env.example
+!frontend/.env.example
 
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/.venv/
+.venv/
+
+# Node / Vite
 frontend/node_modules/
 frontend/dist/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-.DS_Store
-Thumbs.db
-*.py[cod]
-.pytest_cache/
+# Build and release output
 build/
 release-dist/
-installer/Output/
+dist/
+*.spec.bak
+
+# Local Syncthing binary and runtime data
 vendor/syncthing/syncthing.exe
+syncthing.exe
+.stfolder/
+.stversions/
+
+# Local backups and logs
+*.backup.py
+*.previous.tsx
+*.previous.css
+*.log
+*.tmp
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

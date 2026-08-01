@@ -27,7 +27,13 @@ from pydantic import BaseModel, Field
 try:
     from backend.version import APP_VERSION
 except ImportError:
-    from version import APP_VERSION
+    try:
+        from version import APP_VERSION
+    except ImportError:
+        APP_VERSION = os.getenv("OPENUI_APP_VERSION", "1.0.3")
+
+APP_AUTHOR = "Ann Miqdad"
+APP_REPOSITORY = "https://github.com/Ann-herself/openui-hub"
 
 # =========================================================
 # Configuration
@@ -67,9 +73,14 @@ app = FastAPI(
     title="OpenUI Hub API",
     version=APP_VERSION,
     description=(
-        "A simple interface for managing Syncthing "
-        "and other self-hosted open-source applications."
+        "The local API for OpenUI Hub, a professional interface "
+        "for managing Syncthing files, folders, and devices. "
+        "Designed and developed by Ann Miqdad."
     ),
+    contact={
+        "name": APP_AUTHOR,
+        "url": APP_REPOSITORY,
+    },
 )
 
 
@@ -143,6 +154,40 @@ def normalize_path(value: str | Path) -> str:
             os.path.expanduser(str(value))
         )
     )
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    """Convert Syncthing numeric values without crashing the API."""
+
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def browser_entry_payload(
+    folder_root: Path,
+    entry_path: Path,
+    information: os.stat_result | None = None,
+) -> dict[str, Any]:
+    """Return one frontend-compatible file browser entry."""
+
+    file_information = information or entry_path.stat()
+    is_folder = entry_path.is_dir()
+    return {
+        "name": entry_path.name,
+        "path": entry_path.relative_to(folder_root).as_posix(),
+        "type": "folder" if is_folder else "file",
+        "is_folder": is_folder,
+        "size_bytes": None if is_folder else file_information.st_size,
+        "extension": "" if is_folder else entry_path.suffix.lower(),
+        "modified_at": datetime.fromtimestamp(
+            file_information.st_mtime,
+            tz=timezone.utc,
+        ).isoformat(),
+    }
 
 
 def ensure_path_is_allowed(folder_path: Path) -> None:
@@ -255,12 +300,15 @@ async def get_syncthing_folder_config(
 
 @app.get("/api/info")
 def home() -> dict[str, str]:
-    """Return basic OpenUI server information."""
+    """Return public OpenUI Hub application information."""
 
     return {
-        "message": "OpenUI Backend is working",
+        "message": "OpenUI Hub Backend is working",
         "version": APP_VERSION,
+        "author": APP_AUTHOR,
+        "repository": APP_REPOSITORY,
     }
+
 
 
 @app.get("/api/health")
@@ -280,66 +328,63 @@ def openui_health() -> dict[str, str | bool]:
 
 @app.get("/api/syncthing/status")
 async def get_syncthing_status() -> dict[str, Any]:
-    """Return Syncthing status and version information."""
+    """Return validated Syncthing status and version information."""
 
     headers = get_syncthing_headers()
 
     try:
-        async with httpx.AsyncClient(
-            timeout=10.0,
-        ) as client:
-            status_response = await client.get(
-                f"{SYNCTHING_URL}/rest/system/status",
-                headers=headers,
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            status_response, version_response = await asyncio.gather(
+                client.get(
+                    f"{SYNCTHING_URL}/rest/system/status",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{SYNCTHING_URL}/rest/system/version",
+                    headers=headers,
+                ),
             )
 
-            version_response = await client.get(
-                f"{SYNCTHING_URL}/rest/system/version",
-                headers=headers,
+        status_response.raise_for_status()
+        version_response.raise_for_status()
+
+        status_data = status_response.json()
+        version_data = version_response.json()
+
+        if not isinstance(status_data, dict) or not isinstance(version_data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Syncthing returned an invalid status response.",
             )
-
-            status_response.raise_for_status()
-            version_response.raise_for_status()
-
-            status_data = status_response.json()
-            version_data = version_response.json()
 
         return {
             "connected": True,
-            "device_id": status_data.get("myID"),
-            "uptime_seconds": status_data.get("uptime", 0),
-            "memory_bytes": status_data.get("sys", 0),
-            "syncthing_version": version_data.get(
-                "version",
-                "Unknown",
-            ),
-            "operating_system": version_data.get(
-                "os",
-                "Unknown",
-            ),
-            "architecture": version_data.get(
-                "arch",
-                "Unknown",
-            ),
+            "device_id": str(status_data.get("myID") or ""),
+            "uptime_seconds": safe_int(status_data.get("uptime")),
+            "memory_bytes": safe_int(status_data.get("sys")),
+            "syncthing_version": str(version_data.get("version") or "Unknown"),
+            "operating_system": str(version_data.get("os") or "Unknown"),
+            "architecture": str(version_data.get("arch") or "Unknown"),
         }
 
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Syncthing rejected the request. "
-                "Check the API Key."
-            ),
+            detail="Syncthing rejected the status request. Check the API Key.",
         ) from error
-
     except httpx.RequestError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Could not connect to Syncthing. "
-                "Make sure Syncthing is running."
-            ),
+            detail="Could not connect to Syncthing. Make sure Syncthing is running.",
         ) from error
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Syncthing returned status data in an unexpected format.",
+        ) from error
+
 
 
 # =========================================================
@@ -348,78 +393,125 @@ async def get_syncthing_status() -> dict[str, Any]:
 
 @app.get("/api/syncthing/activity")
 async def get_syncthing_activity() -> dict[str, Any]:
-    """Return recent Syncthing events and folder errors."""
+    """Return recent Syncthing events and per-folder errors."""
 
     headers = get_syncthing_headers()
 
     try:
-        async with httpx.AsyncClient(
-            timeout=10.0,
-        ) as client:
-            events_response = await client.get(
-                f"{SYNCTHING_URL}/rest/events/disk",
-                params={
-                    "limit": 100,
-                    "timeout": 0,
-                },
-                headers=headers,
-            )
-
-            errors_response = await client.get(
-                f"{SYNCTHING_URL}/rest/folder/errors",
-                headers=headers,
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            events_response, disk_events_response, folders_response = (
+                await asyncio.gather(
+                    client.get(
+                        f"{SYNCTHING_URL}/rest/events",
+                        params={"since": 0, "limit": 100, "timeout": 1},
+                        headers=headers,
+                    ),
+                    client.get(
+                        f"{SYNCTHING_URL}/rest/events/disk",
+                        params={"since": 0, "limit": 100, "timeout": 1},
+                        headers=headers,
+                    ),
+                    client.get(
+                        f"{SYNCTHING_URL}/rest/config/folders",
+                        headers=headers,
+                    ),
+                )
             )
 
             events_response.raise_for_status()
+            disk_events_response.raise_for_status()
+            folders_response.raise_for_status()
 
-            events_data = events_response.json()
+            event_sources = [events_response.json(), disk_events_response.json()]
+            folders_data = folders_response.json()
 
-            errors: dict[str, Any] = {}
+            merged_events: dict[int, dict[str, Any]] = {}
+            for source in event_sources:
+                if not isinstance(source, list):
+                    continue
+                for raw_event in source:
+                    if not isinstance(raw_event, dict):
+                        continue
+                    event_id = safe_int(raw_event.get("id"), default=-1)
+                    if event_id < 0:
+                        continue
+                    raw_data = raw_event.get("data")
+                    merged_events[event_id] = {
+                        "id": event_id,
+                        "type": str(raw_event.get("type") or "Event"),
+                        "time": str(raw_event.get("time") or ""),
+                        "data": raw_data if isinstance(raw_data, dict) else {},
+                    }
 
+            events = sorted(
+                merged_events.values(),
+                key=lambda item: item["id"],
+                reverse=True,
+            )[:100]
+
+            folder_ids = [
+                str(folder.get("id") or "").strip()
+                for folder in folders_data
+                if isinstance(folder, dict) and str(folder.get("id") or "").strip()
+            ] if isinstance(folders_data, list) else []
+
+            error_responses = await asyncio.gather(
+                *(
+                    client.get(
+                        f"{SYNCTHING_URL}/rest/folder/errors",
+                        params={"folder": folder_id, "page": 1, "perpage": 100},
+                        headers=headers,
+                    )
+                    for folder_id in folder_ids
+                ),
+                return_exceptions=True,
+            )
+
+        errors: dict[str, list[dict[str, str]]] = {}
+        for folder_id, response in zip(folder_ids, error_responses):
+            if isinstance(response, Exception) or not isinstance(response, httpx.Response):
+                continue
+            if response.status_code >= 400:
+                continue
             try:
-                errors_response = await client.get(
-                    f"{SYNCTHING_URL}/rest/folder/errors",
-                    headers=headers,
-                )
+                payload = response.json()
+            except ValueError:
+                continue
+            raw_errors = payload.get("errors", []) if isinstance(payload, dict) else []
+            normalized_errors: list[dict[str, str]] = []
+            if isinstance(raw_errors, list):
+                for item in raw_errors:
+                    if not isinstance(item, dict):
+                        continue
+                    error_text = str(item.get("error") or "Unknown folder error").strip()
+                    error_path = str(item.get("path") or "").strip()
+                    normalized_errors.append({
+                        "error": f"{error_path}: {error_text}" if error_path else error_text,
+                        "time": str(item.get("time") or ""),
+                    })
+            if normalized_errors:
+                errors[folder_id] = normalized_errors
 
-                errors_response.raise_for_status()
+        return {"events": events, "errors": errors}
 
-                errors_data = errors_response.json()
-
-                if isinstance(errors_data, dict):
-                    errors = errors_data.get("folders") or {}
-
-            except httpx.HTTPStatusError:
-                pass
-
-        events = (
-            events_data
-            if isinstance(events_data, list)
-            else []
-        )
-
-        return {
-            "events": events,
-            "errors": errors,
-        }
-
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Syncthing rejected the request. "
-                "Check the API Key."
-            ),
+            detail="Syncthing rejected the activity request. Check the API Key.",
         ) from error
-
     except httpx.RequestError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Could not connect to Syncthing. "
-                "Make sure Syncthing is running."
-            ),
+            detail="Could not connect to Syncthing. Make sure Syncthing is running.",
         ) from error
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Syncthing returned activity data in an unexpected format.",
+        ) from error
+
 
 
 # =========================================================
@@ -428,99 +520,103 @@ async def get_syncthing_activity() -> dict[str, Any]:
 
 @app.get("/api/settings")
 async def get_app_settings() -> dict[str, Any]:
-    """Return OpenUI application and Syncthing overview."""
+    """Return the application, author, and Syncthing overview."""
 
     headers = get_syncthing_headers()
 
     try:
-        async with httpx.AsyncClient(
-            timeout=10.0,
-        ) as client:
-            status_response = await client.get(
-                f"{SYNCTHING_URL}/rest/system/status",
-                headers=headers,
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            (
+                status_response,
+                version_response,
+                folders_response,
+                devices_response,
+            ) = await asyncio.gather(
+                client.get(
+                    f"{SYNCTHING_URL}/rest/system/status",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{SYNCTHING_URL}/rest/system/version",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{SYNCTHING_URL}/rest/config/folders",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{SYNCTHING_URL}/rest/config/devices",
+                    headers=headers,
+                ),
             )
 
-            version_response = await client.get(
-                f"{SYNCTHING_URL}/rest/system/version",
-                headers=headers,
+        for response in (
+            status_response,
+            version_response,
+            folders_response,
+            devices_response,
+        ):
+            response.raise_for_status()
+
+        status_data = status_response.json()
+        version_data = version_response.json()
+        folders_data = folders_response.json()
+        devices_data = devices_response.json()
+
+        if not isinstance(status_data, dict) or not isinstance(version_data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Syncthing returned invalid system information.",
+            )
+        if not isinstance(folders_data, list) or not isinstance(devices_data, list):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Syncthing returned invalid configuration information.",
             )
 
-            folders_response = await client.get(
-                f"{SYNCTHING_URL}/rest/config/folders",
-                headers=headers,
-            )
-
-            devices_response = await client.get(
-                f"{SYNCTHING_URL}/rest/config/devices",
-                headers=headers,
-            )
-
-            status_response.raise_for_status()
-            version_response.raise_for_status()
-            folders_response.raise_for_status()
-            devices_response.raise_for_status()
-
-            status_data = status_response.json()
-            version_data = version_response.json()
-            folders_data = folders_response.json()
-            devices_data = devices_response.json()
-
-        folders = (
-            folders_data
-            if isinstance(folders_data, list)
-            else []
-        )
-
-        devices = (
-            devices_data
-            if isinstance(devices_data, list)
-            else []
+        local_device_id = str(status_data.get("myID") or "").strip()
+        remote_devices_count = sum(
+            1
+            for device in devices_data
+            if isinstance(device, dict)
+            and str(device.get("deviceID") or "").strip()
+            and str(device.get("deviceID") or "").strip() != local_device_id
         )
 
         return {
             "app_version": APP_VERSION,
+            "author": APP_AUTHOR,
+            "repository": APP_REPOSITORY,
             "syncthing_url": SYNCTHING_URL,
             "allowed_root": str(OPENUI_ALLOWED_ROOT),
             "syncthing": {
-                "version": version_data.get(
-                    "version",
-                    "Unknown",
-                ),
-                "operating_system": version_data.get(
-                    "os",
-                    "Unknown",
-                ),
-                "architecture": version_data.get(
-                    "arch",
-                    "Unknown",
-                ),
-                "device_id": status_data.get(
-                    "myID",
-                    "",
-                ),
+                "version": str(version_data.get("version") or "Unknown"),
+                "operating_system": str(version_data.get("os") or "Unknown"),
+                "architecture": str(version_data.get("arch") or "Unknown"),
+                "device_id": local_device_id,
             },
-            "folders_count": len(folders),
-            "devices_count": len(devices),
+            "folders_count": len(folders_data),
+            "devices_count": remote_devices_count,
         }
 
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Syncthing rejected the request. "
-                "Check the API Key."
-            ),
+            detail="Syncthing rejected the settings request. Check the API Key.",
         ) from error
-
     except httpx.RequestError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Could not connect to Syncthing. "
-                "Make sure Syncthing is running."
-            ),
+            detail="Could not connect to Syncthing. Make sure Syncthing is running.",
         ) from error
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Syncthing returned settings data in an unexpected format.",
+        ) from error
+
 
 
 # =========================================================
@@ -529,71 +625,81 @@ async def get_app_settings() -> dict[str, Any]:
 
 @app.get("/api/syncthing/folders")
 async def get_syncthing_folders() -> list[dict[str, Any]]:
-    """Return every folder currently configured in Syncthing."""
+    """Return configured folders with normalized remote-device counts."""
 
     headers = get_syncthing_headers()
 
     try:
-        async with httpx.AsyncClient(
-            timeout=10.0,
-        ) as client:
-            response = await client.get(
-                f"{SYNCTHING_URL}/rest/config/folders",
-                headers=headers,
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            folders_response, status_response = await asyncio.gather(
+                client.get(
+                    f"{SYNCTHING_URL}/rest/config/folders",
+                    headers=headers,
+                ),
+                client.get(
+                    f"{SYNCTHING_URL}/rest/system/status",
+                    headers=headers,
+                ),
             )
 
-            response.raise_for_status()
-            folders = response.json()
+        folders_response.raise_for_status()
+        status_response.raise_for_status()
+        folders = folders_response.json()
+        status_data = status_response.json()
 
-        if not isinstance(folders, list):
+        if not isinstance(folders, list) or not isinstance(status_data, dict):
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    "Syncthing returned an invalid "
-                    "folders response."
-                ),
+                detail="Syncthing returned an invalid folders response.",
             )
 
-        return [
-            {
-                "id": folder.get("id"),
-                "label": (
-                    folder.get("label")
-                    or folder.get("id")
-                ),
-                "path": folder.get("path"),
-                "type": folder.get("type"),
-                "paused": folder.get(
-                    "paused",
-                    False,
-                ),
-                "device_count": len(
-                    folder.get("devices", [])
-                ),
-            }
-            for folder in folders
-            if isinstance(folder, dict)
-        ]
+        local_device_id = str(status_data.get("myID") or "").strip()
+        normalized: list[dict[str, Any]] = []
+
+        for folder in folders:
+            if not isinstance(folder, dict):
+                continue
+            folder_id = str(folder.get("id") or "").strip()
+            if not folder_id:
+                continue
+            raw_devices = folder.get("devices", [])
+            remote_device_ids = {
+                str(device.get("deviceID") or "").strip()
+                for device in raw_devices
+                if isinstance(device, dict)
+                and str(device.get("deviceID") or "").strip()
+                and str(device.get("deviceID") or "").strip() != local_device_id
+            } if isinstance(raw_devices, list) else set()
+            normalized.append({
+                "id": folder_id,
+                "label": str(folder.get("label") or folder_id),
+                "path": str(folder.get("path") or ""),
+                "type": str(folder.get("type") or "sendreceive"),
+                "paused": bool(folder.get("paused", False)),
+                "device_count": len(remote_device_ids),
+            })
+
+        normalized.sort(key=lambda item: item["label"].casefold())
+        return normalized
 
     except HTTPException:
         raise
-
     except httpx.HTTPStatusError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Syncthing rejected the folders request."
-            ),
+            detail="Syncthing rejected the folders request.",
         ) from error
-
     except httpx.RequestError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Could not connect to Syncthing. "
-                "Make sure Syncthing is running."
-            ),
+            detail="Could not connect to Syncthing. Make sure Syncthing is running.",
         ) from error
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Syncthing returned folder data in an unexpected format.",
+        ) from error
+
 
 
 # =========================================================
@@ -1597,14 +1703,8 @@ class CreateInnerFolderRequest(BaseModel):
     )
 
 
-def validate_item_name(
-    value: str,
-    item_description: str,
-) -> str:
-    """
-    Validate a file or directory name before using it
-    on the local filesystem.
-    """
+def validate_item_name(value: str, item_description: str) -> str:
+    """Validate a Windows-compatible file or directory name."""
 
     clean_name = value.strip()
 
@@ -1620,69 +1720,39 @@ def validate_item_name(
             detail=f"The selected {item_description} name is not allowed.",
         )
 
-    if "/" in clean_name or "\\" in clean_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"The {item_description} name cannot contain "
-                "path separators."
-            ),
-        )
-
-    if clean_name.lower() == ".stfolder":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "The name .stfolder is reserved by Syncthing."
-            ),
-        )
-
     if clean_name.rstrip(" .") != clean_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"The {item_description} name cannot end "
-                "with a space or period."
-            ),
+            detail=f"The {item_description} name cannot end with a space or period.",
+        )
+
+    invalid_characters = set('<>:"/\\|?*')
+    if any(character in invalid_characters or ord(character) < 32 for character in clean_name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"The {item_description} name contains characters Windows does not allow.",
+        )
+
+    if clean_name.casefold() in {".stfolder", ".stignore", ".stversions"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This name is reserved by Syncthing.",
         )
 
     windows_reserved_names = {
-        "CON",
-        "PRN",
-        "AUX",
-        "NUL",
-        "COM1",
-        "COM2",
-        "COM3",
-        "COM4",
-        "COM5",
-        "COM6",
-        "COM7",
-        "COM8",
-        "COM9",
-        "LPT1",
-        "LPT2",
-        "LPT3",
-        "LPT4",
-        "LPT5",
-        "LPT6",
-        "LPT7",
-        "LPT8",
-        "LPT9",
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
     }
-
     first_name_part = clean_name.split(".", 1)[0].upper()
-
     if first_name_part in windows_reserved_names:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"The selected {item_description} name "
-                "is reserved by Windows."
-            ),
+            detail=f"The selected {item_description} name is reserved by Windows.",
         )
 
     return clean_name
+
 
 
 async def resolve_syncthing_directory(
@@ -2153,174 +2223,79 @@ async def resolve_syncthing_item_path(
     return folder_root, target_path
 
 
-@app.patch(
-    "/api/syncthing/folders/{folder_id}/files/rename",
-)
+@app.patch("/api/syncthing/folders/{folder_id}/files/rename")
 async def rename_syncthing_browser_entry(
     folder_id: str,
     request: RenameBrowserEntryRequest,
 ) -> dict[str, Any]:
-    """Rename a file or folder inside a sync folder."""
+    """Rename a file or folder safely inside a sync folder."""
 
-    folder_root, source_path = (
-        await resolve_syncthing_item_path(
-            folder_id,
-            request.path,
-        )
+    folder_root, source_path = await resolve_syncthing_item_path(
+        folder_id,
+        request.path,
     )
-
-    clean_name = validate_item_name(
-        request.new_name,
-        "file or folder",
-    )
-
-    if clean_name.casefold() in {
-        ".stfolder",
-        ".stignore",
-        ".stversions",
-    }:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "This name is reserved by Syncthing."
-            ),
-        )
+    clean_name = validate_item_name(request.new_name, "file or folder")
 
     if clean_name == source_path.name:
         source_information = source_path.stat()
-
         return {
             "renamed": False,
-            "entry": {
-                "name": source_path.name,
-                "path": source_path.relative_to(
-                    folder_root
-                ).as_posix(),
-                "type": (
-                    "folder"
-                    if source_path.is_dir()
-                    else "file"
-                ),
-                "is_folder": source_path.is_dir(),
-                "size_bytes": (
-                    None
-                    if source_path.is_dir()
-                    else source_information.st_size
-                ),
-                "extension": (
-                    ""
-                    if source_path.is_dir()
-                    else source_path.suffix.lower()
-                ),
-                "modified_at": datetime.fromtimestamp(
-                    source_information.st_mtime,
-                    tz=timezone.utc,
-                ).isoformat(),
-            },
-            "message": (
-                "The item already has this name."
-            ),
+            "entry": browser_entry_payload(folder_root, source_path, source_information),
+            "message": "The item already has this name.",
         }
 
     target_path = source_path.parent / clean_name
-
     try:
-        target_path.resolve(
-            strict=False
-        ).relative_to(folder_root)
-
+        target_path.resolve(strict=False).relative_to(folder_root)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "The new path would be outside "
-                "the sync folder."
-            ),
+            detail="The new path would be outside the sync folder.",
         ) from error
 
-    if (
-        target_path.exists()
-        and target_path != source_path
-    ):
+    case_only_rename = source_path.name.casefold() == clean_name.casefold()
+    if target_path.exists() and not case_only_rename:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "A file or folder with this name "
-                "already exists."
-            ),
+            detail="A file or folder with this name already exists.",
         )
 
+    temporary_path: Path | None = None
     try:
-        # Windows requires a temporary rename when only
-        # changing uppercase or lowercase characters.
-        if (
-            source_path.name.casefold()
-            == clean_name.casefold()
-        ):
-            temporary_path = source_path.parent / (
-                f".openui-rename-{uuid4().hex}.tmp"
-            )
-
+        if case_only_rename:
+            temporary_path = source_path.parent / f".openui-rename-{uuid4().hex}.tmp"
             source_path.rename(temporary_path)
             temporary_path.rename(target_path)
-
         else:
             source_path.rename(target_path)
-
         renamed_information = target_path.stat()
-
     except PermissionError as error:
+        if temporary_path and temporary_path.exists() and not source_path.exists():
+            try:
+                temporary_path.rename(source_path)
+            except OSError:
+                pass
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "OpenUI does not have permission "
-                "to rename this item."
-            ),
+            detail="OpenUI Hub does not have permission to rename this item.",
         ) from error
-
     except OSError as error:
+        if temporary_path and temporary_path.exists() and not source_path.exists():
+            try:
+                temporary_path.rename(source_path)
+            except OSError:
+                pass
         raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
-            detail=(
-                "Windows could not rename "
-                "the selected item."
-            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Windows could not rename the selected item.",
         ) from error
 
     return {
         "renamed": True,
-        "entry": {
-            "name": target_path.name,
-            "path": target_path.relative_to(
-                folder_root
-            ).as_posix(),
-            "type": (
-                "folder"
-                if target_path.is_dir()
-                else "file"
-            ),
-            "is_folder": target_path.is_dir(),
-            "size_bytes": (
-                None
-                if target_path.is_dir()
-                else renamed_information.st_size
-            ),
-            "extension": (
-                ""
-                if target_path.is_dir()
-                else target_path.suffix.lower()
-            ),
-            "modified_at": datetime.fromtimestamp(
-                renamed_information.st_mtime,
-                tz=timezone.utc,
-            ).isoformat(),
-        },
-        "message": (
-            "The item was renamed successfully."
-        ),
+        "entry": browser_entry_payload(folder_root, target_path, renamed_information),
+        "message": "The item was renamed successfully.",
     }
+
 
 
 @app.delete(
@@ -2566,19 +2541,11 @@ async def get_syncthing_devices() -> list[dict[str, Any]]:
                             False,
                         )
                     ),
-                    "in_bytes_total": int(
-                        connection.get(
-                            "inBytesTotal",
-                            0,
-                        )
-                        or 0
+                    "in_bytes_total": safe_int(
+                        connection.get("inBytesTotal")
                     ),
-                    "out_bytes_total": int(
-                        connection.get(
-                            "outBytesTotal",
-                            0,
-                        )
-                        or 0
+                    "out_bytes_total": safe_int(
+                        connection.get("outBytesTotal")
                     ),
                     "connected_since": str(
                         connection.get(
@@ -2662,7 +2629,7 @@ async def get_syncthing_devices() -> list[dict[str, Any]]:
             ),
         ) from error
 
-    # =========================================================
+# =========================================================
 # Syncthing device management
 # =========================================================
 
@@ -3442,18 +3409,15 @@ async def delete_syncthing_device(
 
 
 def get_openui_resource_path(*parts: str) -> Path:
-    """
-    Resolve bundled resources in development and
-    PyInstaller-packaged environments.
-    """
+    """Resolve resources in development and PyInstaller builds."""
 
     bundled_root = getattr(sys, "_MEIPASS", None)
-
     if bundled_root:
         return Path(str(bundled_root)).joinpath(*parts)
 
     project_root = Path(__file__).resolve().parent.parent
     return project_root.joinpath(*parts)
+
 
 
 FRONTEND_DIST_DIR = get_openui_resource_path(
@@ -3472,40 +3436,43 @@ if FRONTEND_DIST_DIR.is_dir():
             name="openui-assets",
         )
 
-    @app.get(
-        "/{frontend_path:path}",
-        include_in_schema=False,
-    )
-    async def serve_openui_frontend(
-        frontend_path: str,
-    ) -> FileResponse:
-        """
-        Serve the React production application.
-        Existing files are returned directly; other
-        frontend routes fall back to index.html.
-        """
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    async def serve_openui_frontend(frontend_path: str) -> FileResponse:
+        """Serve the production React application with safe SPA fallback."""
+
+        normalized_frontend_path = frontend_path.lstrip("/")
+        if normalized_frontend_path == "api" or normalized_frontend_path.startswith("api/"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="API endpoint not found.",
+            )
 
         resolved_dist_directory = FRONTEND_DIST_DIR.resolve()
-        requested_file = (
-            FRONTEND_DIST_DIR / frontend_path
-        ).resolve()
+        requested_file = (FRONTEND_DIST_DIR / normalized_frontend_path).resolve()
 
         try:
-            requested_file.relative_to(
-                resolved_dist_directory
-            )
+            requested_file.relative_to(resolved_dist_directory)
         except ValueError:
             requested_file = FRONTEND_DIST_DIR / "index.html"
 
-        if frontend_path and requested_file.is_file():
-            return FileResponse(requested_file)
+        if normalized_frontend_path and requested_file.is_file():
+            return FileResponse(
+                requested_file,
+                headers={"Cache-Control": "no-cache"},
+            )
 
         index_file = FRONTEND_DIST_DIR / "index.html"
-
         if not index_file.is_file():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="The OpenUI frontend build is not available.",
+                detail="The OpenUI Hub frontend build is not available.",
             )
 
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )

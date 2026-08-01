@@ -104,6 +104,7 @@ def configure_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
         encoding="utf-8",
+        force=True,
     )
 
 
@@ -269,6 +270,31 @@ def is_openui_ready(port: int) -> bool:
         payload
         and payload.get("healthy") is True
         and payload.get("service") == "openui-backend"
+    )
+
+
+def is_openui_fully_ready(port: int) -> bool:
+    """
+    Return whether an existing OpenUI instance and its configured
+    Syncthing service are both available.
+
+    A healthy FastAPI process alone is not enough: an older OpenUI
+    process may still be listening while its Syncthing child has
+    already stopped.
+    """
+
+    if not is_openui_ready(port):
+        return False
+
+    payload = request_json(
+        f"http://{APP_HOST}:{port}/api/syncthing/status"
+    )
+
+    return bool(
+        payload
+        and payload.get("connected") is True
+        and isinstance(payload.get("device_id"), str)
+        and payload.get("device_id")
     )
 
 
@@ -494,12 +520,25 @@ def main() -> int:
 
     preferred_app_port = int(settings["app_port"])
 
-    if is_openui_ready(preferred_app_port):
+    if is_openui_fully_ready(preferred_app_port):
+        logging.info(
+            "A fully operational OpenUI instance is already "
+            "running on port %s.",
+            preferred_app_port,
+        )
         webbrowser.open(
             f"http://{APP_HOST}:{preferred_app_port}",
             new=1,
         )
         return 0
+
+    if is_openui_ready(preferred_app_port):
+        logging.warning(
+            "An OpenUI backend is listening on port %s, but its "
+            "Syncthing service is unavailable. A fresh OpenUI "
+            "instance will be started on another port.",
+            preferred_app_port,
+        )
 
     if is_port_open(APP_HOST, preferred_app_port):
         app_port = find_free_port(
