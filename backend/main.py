@@ -24,6 +24,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+try:
+    from backend.version import APP_VERSION
+except ImportError:
+    from version import APP_VERSION
+
 # =========================================================
 # Configuration
 # =========================================================
@@ -60,7 +65,7 @@ OPENUI_ALLOWED_ROOT = Path(
 
 app = FastAPI(
     title="OpenUI Hub API",
-    version="0.0.3",
+    version=APP_VERSION,
     description=(
         "A simple interface for managing Syncthing "
         "and other self-hosted open-source applications."
@@ -254,7 +259,7 @@ def home() -> dict[str, str]:
 
     return {
         "message": "OpenUI Backend is working",
-        "version": "0.0.3",
+        "version": APP_VERSION,
     }
 
 
@@ -265,7 +270,7 @@ def openui_health() -> dict[str, str | bool]:
     return {
         "healthy": True,
         "service": "openui-backend",
-        "version": "0.0.3",
+        "version": APP_VERSION,
     }
 
 
@@ -316,6 +321,187 @@ async def get_syncthing_status() -> dict[str, Any]:
                 "arch",
                 "Unknown",
             ),
+        }
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing rejected the request. "
+                "Check the API Key."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+# =========================================================
+# Syncthing activity
+# =========================================================
+
+@app.get("/api/syncthing/activity")
+async def get_syncthing_activity() -> dict[str, Any]:
+    """Return recent Syncthing events and folder errors."""
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+        ) as client:
+            events_response = await client.get(
+                f"{SYNCTHING_URL}/rest/events/disk",
+                params={
+                    "limit": 100,
+                    "timeout": 0,
+                },
+                headers=headers,
+            )
+
+            errors_response = await client.get(
+                f"{SYNCTHING_URL}/rest/folder/errors",
+                headers=headers,
+            )
+
+            events_response.raise_for_status()
+
+            events_data = events_response.json()
+
+            errors: dict[str, Any] = {}
+
+            try:
+                errors_response = await client.get(
+                    f"{SYNCTHING_URL}/rest/folder/errors",
+                    headers=headers,
+                )
+
+                errors_response.raise_for_status()
+
+                errors_data = errors_response.json()
+
+                if isinstance(errors_data, dict):
+                    errors = errors_data.get("folders") or {}
+
+            except httpx.HTTPStatusError:
+                pass
+
+        events = (
+            events_data
+            if isinstance(events_data, list)
+            else []
+        )
+
+        return {
+            "events": events,
+            "errors": errors,
+        }
+
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Syncthing rejected the request. "
+                "Check the API Key."
+            ),
+        ) from error
+
+    except httpx.RequestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not connect to Syncthing. "
+                "Make sure Syncthing is running."
+            ),
+        ) from error
+
+
+# =========================================================
+# OpenUI settings
+# =========================================================
+
+@app.get("/api/settings")
+async def get_app_settings() -> dict[str, Any]:
+    """Return OpenUI application and Syncthing overview."""
+
+    headers = get_syncthing_headers()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+        ) as client:
+            status_response = await client.get(
+                f"{SYNCTHING_URL}/rest/system/status",
+                headers=headers,
+            )
+
+            version_response = await client.get(
+                f"{SYNCTHING_URL}/rest/system/version",
+                headers=headers,
+            )
+
+            folders_response = await client.get(
+                f"{SYNCTHING_URL}/rest/config/folders",
+                headers=headers,
+            )
+
+            devices_response = await client.get(
+                f"{SYNCTHING_URL}/rest/config/devices",
+                headers=headers,
+            )
+
+            status_response.raise_for_status()
+            version_response.raise_for_status()
+            folders_response.raise_for_status()
+            devices_response.raise_for_status()
+
+            status_data = status_response.json()
+            version_data = version_response.json()
+            folders_data = folders_response.json()
+            devices_data = devices_response.json()
+
+        folders = (
+            folders_data
+            if isinstance(folders_data, list)
+            else []
+        )
+
+        devices = (
+            devices_data
+            if isinstance(devices_data, list)
+            else []
+        )
+
+        return {
+            "app_version": APP_VERSION,
+            "syncthing_url": SYNCTHING_URL,
+            "allowed_root": str(OPENUI_ALLOWED_ROOT),
+            "syncthing": {
+                "version": version_data.get(
+                    "version",
+                    "Unknown",
+                ),
+                "operating_system": version_data.get(
+                    "os",
+                    "Unknown",
+                ),
+                "architecture": version_data.get(
+                    "arch",
+                    "Unknown",
+                ),
+                "device_id": status_data.get(
+                    "myID",
+                    "",
+                ),
+            },
+            "folders_count": len(folders),
+            "devices_count": len(devices),
         }
 
     except httpx.HTTPStatusError as error:

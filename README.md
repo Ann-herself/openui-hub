@@ -24,6 +24,23 @@ The backend is built using:
 - FastAPI
 - Uvicorn
 
+## Development
+
+Start the backend (project root):
+
+```
+uvicorn backend.main:app --reload --port 8765
+```
+
+Start the frontend dev server (frontend folder):
+
+```
+npm install
+npm run dev
+```
+
+The Vite dev server runs on http://localhost:5173 and forwards API calls to the backend at http://127.0.0.1:8765.
+
 ## Current Version
 
-v0.0.1
+v1.0.1

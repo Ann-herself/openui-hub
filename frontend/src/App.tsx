@@ -8,7 +8,7 @@ import {
 } from "react";
 import "./App.css";
 
-type Page = "files" | "devices";
+type Page = "files" | "folders" | "devices" | "activity" | "settings";
 type FolderType = "sendreceive" | "sendonly" | "receiveonly";
 type FolderAction = "open" | "scan";
 
@@ -84,6 +84,37 @@ type LocalDevice = {
   message: string;
 };
 
+type ActivityEvent = {
+  id: number;
+  type: string;
+  time: string;
+  data?: Record<string, unknown>;
+};
+
+type FolderErrorEntry = {
+  error: string;
+  time: string;
+};
+
+type ActivityData = {
+  events: ActivityEvent[];
+  errors: Record<string, FolderErrorEntry[]>;
+};
+
+type SettingsData = {
+  app_version: string;
+  syncthing_url: string;
+  allowed_root: string;
+  syncthing: {
+    version: string;
+    operating_system: string;
+    architecture: string;
+    device_id: string;
+  };
+  folders_count: number;
+  devices_count: number;
+};
+
 type DirectoryUploadFile = File & {
   webkitRelativePath?: string;
 };
@@ -105,7 +136,7 @@ type ModalShellProps = {
 const API_URL = import.meta.env.DEV
   ? (
       import.meta.env.VITE_API_URL ||
-      "http://127.0.0.1:8001"
+      "http://127.0.0.1:8765"
     ).replace(/\/+$/, "")
   : "";
 
@@ -167,6 +198,64 @@ function previewType(entry: BrowserEntry): "image" | "pdf" | "unsupported" {
     return "image";
   }
   return extension === ".pdf" ? "pdf" : "unsupported";
+}
+
+function eventMeta(type: string): { icon: string; label: string } {
+  switch (type) {
+    case "Starting":
+      return { icon: "↻", label: "Syncthing starting" };
+    case "StartupComplete":
+      return { icon: "▶", label: "Syncthing started" };
+    case "DeviceConnected":
+      return { icon: "⇄", label: "Device connected" };
+    case "DeviceDisconnected":
+      return { icon: "⇄", label: "Device disconnected" };
+    case "DevicePaused":
+      return { icon: "Ⅱ", label: "Device paused" };
+    case "DeviceResumed":
+      return { icon: "▶", label: "Device resumed" };
+    case "FolderCompletion":
+      return { icon: "✓", label: "Sync completed" };
+    case "FolderSummary":
+      return { icon: "▣", label: "Folder updated" };
+    case "FolderErrors":
+      return { icon: "!", label: "Folder errors" };
+    case "FolderPaused":
+      return { icon: "Ⅱ", label: "Folder paused" };
+    case "FolderResumed":
+      return { icon: "▶", label: "Folder resumed" };
+    case "FolderScanProgress":
+      return { icon: "↻", label: "Scanning folder" };
+    case "FolderSyncProgress":
+      return { icon: "⇄", label: "Syncing folder" };
+    case "ItemStarted":
+      return { icon: "↓", label: "Download started" };
+    case "ItemFinished":
+      return { icon: "✓", label: "File synced" };
+    case "LocalChangeDetected":
+      return { icon: "✎", label: "Local change detected" };
+    case "RemoteChangeDetected":
+      return { icon: "⇄", label: "Remote change detected" };
+    case "StateChanged":
+      return { icon: "⇄", label: "State changed" };
+    case "ConfigSaved":
+      return { icon: "⚙", label: "Configuration saved" };
+    case "DownloadProgress":
+      return { icon: "↓", label: "Download progress" };
+    default:
+      return { icon: "•", label: type || "Event" };
+  }
+}
+
+function eventDetail(event: ActivityEvent): string {
+  const data = event.data ?? {};
+  const folder = typeof data.folder === "string" ? data.folder : undefined;
+  const item = typeof data.item === "string" ? data.item : undefined;
+  const device = typeof data.device === "string" ? data.device : undefined;
+  const parts = [folder, item, device].filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+  return parts.join(" · ");
 }
 
 function buildFileUrl(
@@ -231,6 +320,14 @@ function App() {
   const [localDevice, setLocalDevice] = useState<LocalDevice | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState("");
+
+  const [activity, setActivity] = useState<ActivityData | null>(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState("");
+
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
 
   const [isNewMenuOpen, setIsNewMenuOpen] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -339,6 +436,32 @@ function App() {
     }
   }
 
+  async function loadActivity() {
+    try {
+      setActivityLoading(true);
+      setActivityError("");
+      const activityData = await apiRequest<ActivityData>("/api/syncthing/activity", undefined, "Could not load activity.");
+      setActivity(activityData);
+    } catch (requestError) {
+      setActivityError(requestError instanceof Error ? requestError.message : "Could not load activity.");
+    } finally {
+      setActivityLoading(false);
+    }
+  }
+
+  async function loadSettings() {
+    try {
+      setSettingsLoading(true);
+      setSettingsError("");
+      const settingsData = await apiRequest<SettingsData>("/api/settings", undefined, "Could not load settings.");
+      setSettings(settingsData);
+    } catch (requestError) {
+      setSettingsError(requestError instanceof Error ? requestError.message : "Could not load settings.");
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
   useEffect(() => {
     void loadOverview();
   }, []);
@@ -400,9 +523,26 @@ function App() {
     );
   }, [devices, search]);
 
+  const filteredActivityEvents = useMemo(() => {
+    const events = activity?.events ?? [];
+    const value = search.trim().toLowerCase();
+    if (!value) return events;
+    return events.filter((event) =>
+      `${event.type} ${eventDetail(event)}`.toLowerCase().includes(value),
+    );
+  }, [activity, search]);
+
   async function refreshCurrentView() {
     if (page === "devices") {
       await loadDevices();
+      return;
+    }
+    if (page === "activity") {
+      await loadActivity();
+      return;
+    }
+    if (page === "settings") {
+      await loadSettings();
       return;
     }
     if (selectedFolder) {
@@ -430,10 +570,40 @@ function App() {
     void loadDevices();
   }
 
+  function openSyncFoldersPage() {
+    setPage("folders");
+    setSelectedFolder(null);
+    setBrowserData(null);
+    setBrowserError("");
+    setSearch("");
+    setActiveMenu(null);
+  }
+
+  function openActivityPage() {
+    setPage("activity");
+    setSelectedFolder(null);
+    setBrowserData(null);
+    setSearch("");
+    setActiveMenu(null);
+    void loadActivity();
+  }
+
+  function openSettingsPage() {
+    setPage("settings");
+    setSelectedFolder(null);
+    setBrowserData(null);
+    setSearch("");
+    setActiveMenu(null);
+    void loadSettings();
+  }
+
   function handleNewButton() {
     if (page === "devices") {
       clearFormState();
       setAddDeviceOpen(true);
+      return;
+    }
+    if (page === "activity" || page === "settings") {
       return;
     }
     if (!selectedFolder) {
@@ -890,6 +1060,16 @@ function App() {
     ? buildFileUrl(selectedFolder.id, previewEntry.path, "download")
     : "";
 
+  const folderErrorCount = Object.values(activity?.errors ?? {}).reduce(
+    (total, entries) => total + entries.length,
+    0,
+  );
+
+  function folderName(folderId: string): string {
+    const match = folders.find((folder) => folder.id === folderId);
+    return match ? match.label : folderId;
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -901,17 +1081,18 @@ function App() {
           </div>
         </div>
 
-        <div className="new-menu-wrap" onClick={(event) => event.stopPropagation()}>
-          <button className="new-button" type="button" onClick={handleNewButton} disabled={isUploading}>
-            <span>＋</span>
-            {folderUploadLoading
-              ? `Uploading ${folderUploadProgress.current}/${folderUploadProgress.total}`
-              : uploadLoading
-                ? "Uploading..."
-                : page === "devices"
-                  ? "Add device"
-                  : "New"}
-          </button>
+        {page !== "activity" && page !== "settings" && (
+          <div className="new-menu-wrap" onClick={(event) => event.stopPropagation()}>
+            <button className="new-button" type="button" onClick={handleNewButton} disabled={isUploading}>
+              <span>＋</span>
+              {folderUploadLoading
+                ? `Uploading ${folderUploadProgress.current}/${folderUploadProgress.total}`
+                : uploadLoading
+                  ? "Uploading..."
+                  : page === "devices"
+                    ? "Add device"
+                    : "New"}
+            </button>
 
           {page === "files" && selectedFolder && isNewMenuOpen && (
             <div className="new-file-menu">
@@ -965,21 +1146,22 @@ function App() {
             }}
           />
         </div>
+        )}
 
         <nav className="navigation">
           <button className={`nav-item${page === "files" ? " active" : ""}`} type="button" onClick={openFilesPage}>
             <span className="nav-icon">▣</span> My Files
           </button>
-          <button className="nav-item" type="button" onClick={openFilesPage}>
+          <button className={`nav-item${page === "folders" ? " active" : ""}`} type="button" onClick={openSyncFoldersPage}>
             <span className="nav-icon">⇄</span> Sync Folders
           </button>
           <button className={`nav-item${page === "devices" ? " active" : ""}`} type="button" onClick={openDevicesPage}>
             <span className="nav-icon">◉</span> Devices
           </button>
-          <button className="nav-item" type="button">
+          <button className={`nav-item${page === "activity" ? " active" : ""}`} type="button" onClick={openActivityPage}>
             <span className="nav-icon">◷</span> Activity
           </button>
-          <button className="nav-item" type="button">
+          <button className={`nav-item${page === "settings" ? " active" : ""}`} type="button" onClick={openSettingsPage}>
             <span className="nav-icon">⚙</span> Settings
           </button>
         </nav>
@@ -995,15 +1177,25 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <label className="search-box">
-            <span>⌕</span>
-            <input
-              type="search"
-              placeholder={page === "devices" ? "Search devices" : selectedFolder ? "Search in this folder" : "Search in your files"}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
+          {page !== "settings" && (
+            <label className="search-box">
+              <span>⌕</span>
+              <input
+                type="search"
+                placeholder={
+                  page === "devices"
+                    ? "Search devices"
+                    : page === "activity"
+                      ? "Search activity"
+                      : selectedFolder
+                        ? "Search in this folder"
+                        : "Search in your files"
+                }
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </label>
+          )}
           <button className="refresh-button" type="button" onClick={() => void refreshCurrentView()} aria-label="Refresh" title="Refresh">
             ↻
           </button>
@@ -1182,12 +1374,191 @@ function App() {
                 </div>
               )}
             </>
+          ) : page === "activity" ? (
+            <>
+              <div className="page-heading">
+                <div>
+                  <p className="page-eyebrow">OPENUI HUB</p>
+                  <h1>Activity</h1>
+                  <p>Recent Syncthing events and folder errors.</p>
+                </div>
+                {status?.connected && (
+                  <div className="connection-badge">
+                    <span className="connection-dot online" /> Syncthing connected
+                  </div>
+                )}
+              </div>
+
+              {activityLoading && <div className="state-card">Loading activity...</div>}
+              {activityError && (
+                <div className="state-card error-card">
+                  <strong>Could not load activity</strong>
+                  <p>{activityError}</p>
+                  <button type="button" onClick={() => void loadActivity()}>Try again</button>
+                </div>
+              )}
+
+              {!activityLoading && !activityError && (
+                <>
+                  <div className="section-heading">
+                    <div>
+                      <h2>Recent Activity</h2>
+                      <span>{filteredActivityEvents.length} event{filteredActivityEvents.length === 1 ? "" : "s"}</span>
+                    </div>
+                  </div>
+
+                  {filteredActivityEvents.length ? (
+                    <div className="activity-list">
+                      {filteredActivityEvents.map((event) => {
+                        const meta = eventMeta(event.type);
+                        const detail = eventDetail(event);
+                        return (
+                          <article className="activity-item" key={event.id}>
+                            <div className="activity-icon">{meta.icon}</div>
+                            <div className="activity-text">
+                              <strong>{meta.label}</strong>
+                              {detail && <span>{detail}</span>}
+                            </div>
+                            <time className="activity-time">{formatDate(event.time)}</time>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <div className="empty-folder"><span /></div>
+                      <h2>No activity yet</h2>
+                      <p>Events will appear here as Syncthing syncs.</p>
+                    </div>
+                  )}
+
+                  <div className="section-heading">
+                    <div>
+                      <h2>Folder Errors</h2>
+                      <span>{folderErrorCount} error{folderErrorCount === 1 ? "" : "s"}</span>
+                    </div>
+                  </div>
+
+                  {folderErrorCount ? (
+                    <div className="activity-list">
+                      {Object.entries(activity?.errors ?? {}).flatMap(([folderId, entries]) =>
+                        entries.map((entry, index) => (
+                          <article className="activity-item error-item" key={`${folderId}-${index}`}>
+                            <div className="activity-icon">!</div>
+                            <div className="activity-text">
+                              <strong>{folderName(folderId)}</strong>
+                              <span>{entry.error}</span>
+                            </div>
+                            <time className="activity-time">{formatDate(entry.time)}</time>
+                          </article>
+                        )),
+                      )}
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <div className="empty-folder"><span /></div>
+                      <h2>No folder errors</h2>
+                      <p>All your sync folders are healthy.</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          ) : page === "settings" ? (
+            <>
+              <div className="page-heading">
+                <div>
+                  <p className="page-eyebrow">OPENUI HUB</p>
+                  <h1>Settings</h1>
+                  <p>Overview of OpenUI Hub and the connected Syncthing instance.</p>
+                </div>
+                {status?.connected && (
+                  <div className="connection-badge">
+                    <span className="connection-dot online" /> Syncthing connected
+                  </div>
+                )}
+              </div>
+
+              {settingsLoading && <div className="state-card">Loading settings...</div>}
+              {settingsError && (
+                <div className="state-card error-card">
+                  <strong>Could not load settings</strong>
+                  <p>{settingsError}</p>
+                  <button type="button" onClick={() => void loadSettings()}>Try again</button>
+                </div>
+              )}
+
+              {!settingsLoading && !settingsError && settings && (
+                <>
+                  <div className="settings-grid">
+                    <section className="settings-card">
+                      <h2>OpenUI Hub</h2>
+                      <div className="settings-row">
+                        <span>Version</span>
+                        <strong>{settings.app_version}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>Allowed storage root</span>
+                        <code>{settings.allowed_root}</code>
+                      </div>
+                    </section>
+
+                    <section className="settings-card">
+                      <h2>Syncthing</h2>
+                      <div className="settings-row">
+                        <span>Version</span>
+                        <strong>{settings.syncthing.version}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>System</span>
+                        <strong>{settings.syncthing.operating_system} · {settings.syncthing.architecture}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>API</span>
+                        <strong>{settings.syncthing_url}</strong>
+                      </div>
+                    </section>
+
+                    <section className="settings-card">
+                      <h2>Counts</h2>
+                      <div className="settings-row">
+                        <span>Sync folders</span>
+                        <strong>{settings.folders_count}</strong>
+                      </div>
+                      <div className="settings-row">
+                        <span>Devices</span>
+                        <strong>{settings.devices_count}</strong>
+                      </div>
+                    </section>
+                  </div>
+
+                  {settings.syncthing.device_id && (
+                    <section className="settings-card device-card">
+                      <h2>This Device ID</h2>
+                      <div className="device-id-box">
+                        <code>{settings.syncthing.device_id}</code>
+                        <button
+                          className="copy-device-button"
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(settings.syncthing.device_id);
+                            success("Device ID copied.");
+                          }}
+                        >
+                          Copy ID
+                        </button>
+                      </div>
+                    </section>
+                  )}
+                </>
+              )}
+            </>
           ) : (
             <>
               <div className="page-heading">
                 <div>
                   <p className="page-eyebrow">OPENUI HUB</p>
-                  <h1>{selectedFolder ? selectedFolder.label : "My Files"}</h1>
+                  <h1>{selectedFolder ? selectedFolder.label : page === "folders" ? "Sync Folders" : "My Files"}</h1>
                   <p>{selectedFolder ? "Browse files stored in this sync folder." : "Your Syncthing folders in one simple place."}</p>
                 </div>
                 {status?.connected && (

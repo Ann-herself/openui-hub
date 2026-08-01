@@ -17,11 +17,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-import uvicorn
-from dotenv import dotenv_values
-
-
-# PyInstaller windowed applications may not provide stdout/stderr.
+# PyInstaller windowed applications may not provide console streams.
 if sys.stdout is None:
     sys.stdout = open(
         os.devnull,
@@ -36,6 +32,8 @@ if sys.stderr is None:
         encoding="utf-8",
     )
 
+import uvicorn
+from dotenv import dotenv_values
 
 
 APP_NAME = "OpenUI Hub"
@@ -624,13 +622,21 @@ def main() -> int:
             app_url,
         )
 
-        uvicorn.run(
-            app,
+        uvicorn_config = uvicorn.Config(
+            app=app,
             host=APP_HOST,
             port=app_port,
             log_config=None,
+            log_level=None,
             access_log=False,
+            use_colors=False,
         )
+
+        uvicorn_server = uvicorn.Server(
+            config=uvicorn_config,
+        )
+
+        uvicorn_server.run()
 
         return 0
 
